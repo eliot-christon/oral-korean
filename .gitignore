@@ -14,6 +14,13 @@ wheels/
 # Virtual environments
 .venv
 
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Runtime caches
+.cache/
+
 # Claude
 .claude/
 CLAUDE.md
