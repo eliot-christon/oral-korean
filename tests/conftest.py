@@ -12,6 +12,63 @@ from types import ModuleType
 from typing import Literal
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from oral_korean.api.app import create_app
+from oral_korean.config import AppConfig
+
+
+@dataclass
+class NumbersHarness:
+    """A `create_app` instance wired to a `FakeSpeechEngine`, ready for the numbers routes.
+
+    Reused by T05's asset test, which is why this lives in `conftest.py` rather than only
+    in `test_api_numbers.py`.
+
+    Attributes:
+        app: the `FastAPI` instance itself, so a test can reach into `app.state` for the
+            pending-question store instead of the HTTP API - needed to read back the drawn
+            number and Korean text that the create-question response must never leak.
+        client: a `TestClient` bound to `app`.
+        engine: the `FakeSpeechEngine` injected into `app`, so a test can inspect
+            `engine.calls` to check what was (or was not) synthesised, and how many times.
+        config: the `AppConfig` the app was built from.
+    """
+
+    app: FastAPI
+    client: TestClient
+    engine: FakeSpeechEngine
+    config: AppConfig
+
+
+def build_numbers_harness(
+    base_dir: Path, *, engine: FakeSpeechEngine | None = None
+) -> NumbersHarness:
+    """Build one isolated `NumbersHarness` rooted at `base_dir`.
+
+    A plain function as well as a fixture, so a test that needs two independent app
+    instances (the pending-question-store isolation contract) can call it twice with two
+    different directories instead of juggling two fixtures for one test.
+
+    Args:
+        base_dir: root directory for this instance's frontend/audio-cache directories.
+        engine: the `FakeSpeechEngine` to inject; `None` builds a fresh default one. A
+            test that needs to observe a synthesis failure passes its own
+            `FakeSpeechEngine(error=...)` or `FakeSpeechEngine(behaviour="writes_nothing")`
+            here instead of reaching into the harness after the fact.
+    """
+    engine = engine if engine is not None else FakeSpeechEngine()
+    config = AppConfig(frontend_dist=base_dir / "dist", audio_cache_dir=base_dir / "audio")
+    app = create_app(config, speech_engine=engine)
+    return NumbersHarness(app=app, client=TestClient(app), engine=engine, config=config)
+
+
+@pytest.fixture
+def numbers_harness(tmp_path: Path) -> NumbersHarness:
+    """One isolated app + client + fake engine, freshly built per test."""
+    return build_numbers_harness(tmp_path)
+
 
 # Content markers used to prove *which* file the app actually served, without
 # the test re-implementing any HTML/JS parsing of its own.
