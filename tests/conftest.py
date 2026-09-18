@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import Literal
 
 import pytest
@@ -149,3 +153,57 @@ class FakeSpeechEngine:
         elif self.behaviour == "writes_empty_file":
             destination.write_bytes(b"")
         # "writes_nothing": deliberately leaves `destination` absent.
+
+
+FORBIDDEN_IMPORTS: tuple[str, ...] = (
+    "oral_korean.tts",
+    "oral_korean.api",
+    "fastapi",
+    "httpx",
+    "melo",
+    "requests",
+)
+"""What a pure module may never reach for, directly or transitively by name.
+
+One list rather than one per test file: a package added to a copy and not to the others
+would leave that layer silently unguarded, which is the opposite of what these tests are
+for. `korean/` and `exercises/` decide what to say and whether an answer is right, and
+nothing there may talk to the outside world.
+"""
+
+
+def imported_module_names(module: ModuleType) -> set[str]:
+    """Every module name `module` imports, read from its source rather than from runtime.
+
+    Reading the source statically is the point: an import that only happens inside a
+    function (a deliberately lazy one, or a sneaked-in dependency) shows up just the same,
+    and nothing has to be executed or patched to find it. Used by the layering tests that
+    keep `korean/` and `exercises/` free of `tts/` and `api/`.
+    """
+    source_path = inspect.getsourcefile(module)
+    assert source_path is not None, f"{module.__name__} has no source file on disk"
+
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(Path(source_path).read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
+            names.add(node.module)
+    return names
+
+
+def signature_shape(function: Callable[..., object]) -> tuple[list[str], list[str]]:
+    """Return `function`'s parameter names, split into positional then keyword-only.
+
+    Parameter names and order are part of the contract a module publishes, not an
+    accident of its first draft, so several modules pin them. Lives here rather than in
+    one test file because the check is identical wherever it is made.
+    """
+    kinds = {
+        name: parameter.kind
+        for name, parameter in inspect.signature(function).parameters.items()
+    }
+    return (
+        [name for name, kind in kinds.items() if kind is inspect.Parameter.POSITIONAL_OR_KEYWORD],
+        [name for name, kind in kinds.items() if kind is inspect.Parameter.KEYWORD_ONLY],
+    )
