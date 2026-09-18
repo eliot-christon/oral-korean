@@ -13,6 +13,34 @@ dependencies = [
     "uvicorn>=0.53.0",
 ]
 
+[project.optional-dependencies]
+# Deliberately an extra, not a default dependency: this drags in torch, torchaudio,
+# transformers and a per-language G2P stack, and its installer downloads a Japanese
+# dictionary this project never uses. CI runs `uv sync --all-groups`, which installs
+# groups but not extras, so none of that reaches CI. Not the third-party PyPI `melotts`
+# package (0.1.1, Feb 2024, unaffiliated with myshell-ai) - hence the official repository.
+tts = [
+    "melotts @ git+https://github.com/myshell-ai/MeloTTS.git",
+    # Not a MeloTTS dependency, but its dependencies' unstated one: pykakasi and cn2an
+    # still `import pkg_resources` at module level. setuptools removed that module in 81,
+    # and uv does not put setuptools in a venv at all, so without this `import melo.api`
+    # dies with `ModuleNotFoundError: No module named 'pkg_resources'`. The ceiling is the
+    # whole point of the pin, so it cannot be relaxed until those packages are updated.
+    "setuptools<81",
+    # g2pkk, MeloTTS's Korean G2P, needs a Korean MeCab and declares one nowhere: it looks
+    # for `eunjeon` on Windows and `python-mecab-ko` everywhere else, and installs whatever
+    # is missing by shelling out to pip the first time it runs. Declaring it is what stops
+    # that shell-out (which fails anyway: a uv venv has no pip on PATH).
+    #
+    # The marker is not a preference. On Windows `python-mecab-ko` installs a `mecab/`
+    # package that collides with the `MeCab/` of mecab-python3, which MeloTTS needs for
+    # Japanese and which Korean loads too, since MeloTTS imports every language it ships.
+    # On a case-insensitive filesystem those are one directory and the two packages destroy
+    # each other. The Windows alternative, `eunjeon`, published cp36 wheels only and cannot
+    # build on 3.12. That is why the backend speaks Korean from the Linux container.
+    "python-mecab-ko ; sys_platform != 'win32'",
+]
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
@@ -25,6 +53,39 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/oral_korean"]
+
+# The `tts` extra points at MeloTTS's git repository, which hatchling rejects as a direct
+# reference unless this is set. Nothing is published to PyPI from here, so the usual
+# reason to forbid direct references does not apply.
+[tool.hatch.metadata]
+allow-direct-references = true
+
+# Two of MeloTTS's pins predate Python 3.12 and ship no wheel for it, so a plain
+# `uv sync --extra tts` tries to compile them from source and dies for want of a toolchain
+# this project should not require. Both are overridden instead, and neither override
+# touches code MeloTTS actually runs for Korean:
+#
+#   - `transformers==4.27.4` drags in `tokenizers` <0.14, whose newest release (0.13.3,
+#     April 2023) has no cp312 wheel: "error: can't find Rust compiler". MeloTTS only ever
+#     uses `AutoTokenizer` and `AutoModelForMaskedLM`, stable since long before the pin.
+#   - `fugashi==1.3.0` has no cp312 wheel either: "Microsoft Visual C++ 14.0 or greater is
+#     required". It is a Japanese MeCab wrapper that appears nowhere in MeloTTS's source
+#     outside `requirements.txt` - a dead dependency, and Korean would not use it anyway.
+#   - `librosa==0.9.1` imports `pkg_resources` at module level, which no longer exists: uv
+#     creates venvs without setuptools, and setuptools has since dropped it anyway, so
+#     `import melo.api` dies with `ModuleNotFoundError: No module named 'pkg_resources'`.
+#     0.10 replaced that import. MeloTTS uses three librosa entry points
+#     (`filters.mel`, `util.pad_center`, `load`), each already called with the keyword
+#     arguments 0.10 made mandatory, so the bump needs no change in MeloTTS itself.
+#
+# jieba, langid and gruut ship no wheels at all but are pure Python, so their sdists
+# install without a compiler and are left at MeloTTS's pins.
+[tool.uv]
+override-dependencies = [
+    "transformers>=4.44,<5",
+    "fugashi>=1.5.2",
+    "librosa>=0.10",
+]
 
 [tool.ruff]
 line-length = 100
@@ -46,12 +107,22 @@ python_version = "3.12"
 strict = true
 exclude = ["^\\.venv/", "^frontend/"]
 
+# `melo` ships no type information and is only present with the `tts` extra, which CI
+# never installs. Without this, a default-install type check fails on the lazy import.
+[[tool.mypy.overrides]]
+module = ["melo.*"]
+ignore_missing_imports = true
+
 [tool.pylint.main]
 py-version = "3.12"
 ignore = [".venv", ".git", "frontend"]
 
 [tool.pylint.format]
 max-line-length = 100
+
+[tool.pylint.typecheck]
+# Same reason as the mypy override above: absent on a default install, by design.
+ignored-modules = ["melo", "melo.api"]
 
 [tool.pylint."messages control"]
 disable = [
