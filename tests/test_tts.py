@@ -31,6 +31,8 @@ import inspect
 import os
 import re
 import sys
+import threading
+import time
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -659,6 +661,7 @@ def install_fake_melo(
     speakers: dict[str, int] | None = None,
     fails_with: Exception | None = None,
     load_fails_with: Exception | None = None,
+    during_call: Callable[[], None] | None = None,
 ) -> MeloRecorder:
     """Put a fake `melo.api` in `sys.modules` and return a recorder of what it receives.
 
@@ -670,7 +673,9 @@ def install_fake_melo(
     keyword, so the adapter is free to call it either way.
 
     `fails_with` makes synthesis raise; `load_fails_with` makes the model construction
-    itself raise, which is what a missing or corrupt checkpoint looks like.
+    itself raise, which is what a missing or corrupt checkpoint looks like. `during_call`
+    runs inside `tts_to_file`, while the adapter believes MeloTTS is busy, which is the
+    only window in which overlapping threads can be observed.
     """
     recorder = MeloRecorder()
     speaker_ids = {VOICE: 0} if speakers is None else speakers
@@ -692,6 +697,8 @@ def install_fake_melo(
             **kwargs: object,
         ) -> None:
             """Record the call and write where MeloTTS would have written."""
+            if during_call is not None:
+                during_call()
             raw_output = kwargs.get("output_path", args[0] if args else None)
             raw_speed = kwargs.get("speed", args[4] if len(args) > 4 else 1.0)
             destination = Path(str(raw_output))
@@ -824,6 +831,79 @@ def test_melo_model_is_built_once_per_engine_instance(
 
     assert len(recorder.constructions) == 1
     assert len(recorder.calls) == 2
+
+
+class OverlapProbe:  # pylint: disable=too-few-public-methods
+    """Counts how many threads are inside the fake MeloTTS model at the same time.
+
+    `peak` is the whole assertion: 1 means the adapter serialised the calls, anything
+    above it means two threads were inside MeloTTS at once.
+    """
+
+    def __init__(self, hold: float = 0.05) -> None:
+        self._lock = threading.Lock()
+        self._hold = hold
+        self._active = 0
+        self.peak = 0
+
+    def __call__(self) -> None:
+        with self._lock:
+            self._active += 1
+            self.peak = max(self.peak, self._active)
+        # Long enough that genuinely parallel callers are caught overlapping; a serialised
+        # run just pays it once per call.
+        time.sleep(self._hold)
+        with self._lock:
+            self._active -= 1
+
+
+def synthesise_from_threads(engine: MeloSpeechEngine, tmp_path: Path, count: int) -> list[str]:
+    """Start `count` synthesises at once and return what they raised, empty if nothing did."""
+    failures: list[str] = []
+
+    def work(index: int) -> None:
+        try:
+            engine.synthesise(
+                f"{TEXT}{index}",
+                voice=VOICE,
+                speed=SPEED,
+                destination=tmp_path / f"{index}.wav",
+            )
+        # The point is to report whatever a racing thread raised, not to predict it.
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            failures.append(repr(exc))
+
+    threads = [threading.Thread(target=work, args=(index,)) for index in range(count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    return failures
+
+
+def test_concurrent_synthesis_is_serialised(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """One thread inside MeloTTS at a time, because two is what breaks it.
+
+    The regression test for the failure the trainer actually hit: clicking through
+    questions faster than they synthesise put several requests in FastAPI's threadpool at
+    once, MeloTTS's unguarded lazy BERT load raced, and each one came back to the browser
+    as "Could not synthesise audio for this question". Serialising is asserted through the
+    engine's own seam rather than by reaching for the lock, so the guarantee survives a
+    change of mechanism.
+    """
+    probe = OverlapProbe()
+    recorder = install_fake_melo(monkeypatch, during_call=probe)
+    engine = MeloSpeechEngine()
+
+    failures = synthesise_from_threads(engine, tmp_path, count=4)
+
+    assert not failures
+    assert probe.peak == 1
+    # Serialised, not dropped: every caller still gets its audio.
+    assert len(recorder.calls) == 4
+    assert len(recorder.constructions) == 1
 
 
 def test_melo_engine_forwards_text_speed_and_destination(
