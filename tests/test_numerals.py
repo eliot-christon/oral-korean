@@ -58,9 +58,8 @@ from collections.abc import Callable
 from typing import cast
 
 import pytest
-from conftest import FORBIDDEN_IMPORTS, imported_module_names, signature_shape
+from conftest import signature_shape
 
-from oral_korean.korean import numerals
 from oral_korean.korean.numerals import (
     DEFAULT_NUMERAL_SYSTEM,
     NumberRange,
@@ -198,16 +197,6 @@ def test_public_signatures_keep_their_agreed_shape(
 ) -> None:
     """Parameter names and order are the contract, not an accident of the first draft."""
     assert signature_shape(function) == (positional, keyword_only)
-
-
-def test_the_numerals_module_stays_pure() -> None:
-    """`korean/` may not import `tts/`, `api/` or anything that talks to the outside.
-
-    Read statically from the source, so an import hidden inside a function is caught too.
-    """
-    imported = imported_module_names(numerals)
-
-    assert not [name for name in imported if name.startswith(FORBIDDEN_IMPORTS)]
 
 
 # ---------------------------------------------------------------------------------

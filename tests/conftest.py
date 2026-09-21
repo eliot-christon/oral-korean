@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import inspect
 import wave
 from collections.abc import Callable
@@ -222,31 +223,49 @@ FORBIDDEN_IMPORTS: tuple[str, ...] = (
 )
 """What a pure module may never reach for, directly or transitively by name.
 
-One list rather than one per test file: a package added to a copy and not to the others
-would leave that layer silently unguarded, which is the opposite of what these tests are
+One list rather than one per package: a name added to a copy and not to the others would
+leave that layer silently unguarded, which is the opposite of what `test_layering.py` is
 for. `korean/` and `exercises/` decide what to say and whether an answer is right, and
-nothing there may talk to the outside world.
+nothing there may talk to the outside world. `korean/` is stricter still and adds
+`oral_korean.exercises` to this list in that file.
 """
 
 
+def imported_names_in_source(source: str, package: str) -> set[str]:
+    """Every name `source` imports, spelled as an absolute dotted name.
+
+    Every spelling of an import has to land on the same names, or a prefix check has a hole
+    in it: `from oral_korean import tts` reads as `oral_korean.tts`, and a relative
+    `from ..tts import cache` is resolved against `package` (the package the source lives
+    in) first. What is imported *from* a module is recorded next to the module itself,
+    which is what makes the first case visible at all.
+    """
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            target = "." * node.level + (node.module or "")
+            base = importlib.util.resolve_name(target, package) if node.level else target
+            names.add(base)
+            names.update(f"{base}.{alias.name}" for alias in node.names)
+    return names
+
+
 def imported_module_names(module: ModuleType) -> set[str]:
-    """Every module name `module` imports, read from its source rather than from runtime.
+    """Every name `module` imports, read from its source rather than from runtime.
 
     Reading the source statically is the point: an import that only happens inside a
     function (a deliberately lazy one, or a sneaked-in dependency) shows up just the same,
-    and nothing has to be executed or patched to find it. Used by the layering tests that
-    keep `korean/` and `exercises/` free of `tts/` and `api/`.
+    and nothing has to be executed or patched to find it. Used by `test_layering.py`, which
+    keeps every module in `korean/` and `exercises/` inside its layer.
     """
     source_path = inspect.getsourcefile(module)
     assert source_path is not None, f"{module.__name__} has no source file on disk"
 
-    names: set[str] = set()
-    for node in ast.walk(ast.parse(Path(source_path).read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module is not None and node.level == 0:
-            names.add(node.module)
-    return names
+    return imported_names_in_source(
+        Path(source_path).read_text(encoding="utf-8"), module.__package__ or ""
+    )
 
 
 def signature_shape(function: Callable[..., object]) -> tuple[list[str], list[str]]:
