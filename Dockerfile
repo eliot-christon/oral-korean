@@ -22,8 +22,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # Dependencies in their own layer, before the source: torch and friends are the slow part
-# of this build and they change far less often than the code does.
-COPY pyproject.toml uv.lock README.md ./
+# of this build and they change far less often than the code does. Only the two files
+# that decide them: README.md waits for the project build below, so a docs edit does not
+# reinstall the whole TTS stack.
+COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --extra tts --no-install-project
 
@@ -34,7 +36,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN uv run --frozen --no-sync python -m unidic download
 
 COPY src ./src
-COPY main.py ./
+# README.md is the wheel's `readme`: hatchling refuses to build the project without it.
+COPY main.py README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --extra tts
 
