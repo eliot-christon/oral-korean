@@ -72,6 +72,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import App from './App'
+import { classTokensIn } from './testUtils'
 
 const SYSTEMS_PATH = '/api/exercises/numbers/systems'
 const QUESTIONS_PATH = '/api/exercises/numbers/questions'
@@ -210,6 +211,10 @@ function nextButton(): HTMLButtonElement {
 
 function showAnswerButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: /show answer|reveal/i }) as HTMLButtonElement
+}
+
+function submitButton(): HTMLButtonElement {
+  return screen.getByRole('button', { name: /submit/i }) as HTMLButtonElement
 }
 
 let playSpy: ReturnType<typeof vi.spyOn>
@@ -420,6 +425,8 @@ test('the replay and show-answer controls and the audio element stay unusable un
   expect(showAnswerButton().disabled).toBe(true)
   expect(container.querySelector('audio')).toBeNull()
 
+  // The draw is sent by an effect that can run a task after Replay first renders.
+  await waitFor(() => expect(questionCreationRequests(fetchMock)).toHaveLength(1))
   resolveQuestion()
 
   await waitFor(() => expect(replayButton.hasAttribute('disabled')).toBe(false))
@@ -523,6 +530,128 @@ test('pressing Enter in the answer input submits, the same as clicking submit', 
   expect(answerRequests(fetchMock)[0].body).toEqual({ answer: '3' })
 })
 
+// The whole loop on one key (asked by the user at the ui-redesign T03 sign-off): Enter
+// submits, and once the verdict is shown, Enter again moves on to the next number.
+test('pressing Enter again once the verdict is shown draws the next question instead of resubmitting', async () => {
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1'), questionStub('q2')],
+    answer: { verdict: 'incorrect', expected_number: 3, text: '삼' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  const answerInput = (await screen.findByRole('textbox', { name: /answer/i })) as HTMLInputElement
+  fireEvent.change(answerInput, { target: { value: '4' } })
+  fireEvent.keyDown(answerInput, { key: 'Enter', code: 'Enter' })
+  await screen.findByRole('status')
+
+  fireEvent.keyDown(answerInput, { key: 'Enter', code: 'Enter' })
+
+  await waitFor(() => expect(questionCreationRequests(fetchMock)).toHaveLength(2))
+  expect(answerRequests(fetchMock)).toHaveLength(1)
+  await waitFor(() => {
+    expect(container.querySelector('audio')?.getAttribute('src')).toBe(
+      '/api/exercises/numbers/questions/q2/audio',
+    )
+  })
+  expect(answerInput.value).toBe('')
+  expect(screen.queryByRole('status')).toBeNull()
+})
+
+test('pressing Enter in the answer input after a reveal draws the next question', async () => {
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1'), questionStub('q2')],
+    answer: { verdict: 'not_a_number', expected_number: 42, text: '사십이' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  fireEvent.click(showAnswerButton())
+  await screen.findByRole('status')
+
+  const answerInput = screen.getByRole('textbox', { name: /answer/i })
+  fireEvent.keyDown(answerInput, { key: 'Enter', code: 'Enter' })
+
+  await waitFor(() => expect(questionCreationRequests(fetchMock)).toHaveLength(2))
+  expect(answerRequests(fetchMock)).toHaveLength(1)
+})
+
+// A mouse click on Submit or Show answer disables the button it lands on, which drops focus
+// to the page itself: Enter still has to move on from there.
+test.each([
+  { name: 'clicking submit', act: () => answerQuestion('3') },
+  {
+    name: 'clicking show answer',
+    act: () => {
+      fireEvent.click(showAnswerButton())
+      return Promise.resolve()
+    },
+  },
+])('after $name, Enter moves on from wherever focus is left', async ({ act }) => {
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1'), questionStub('q2')],
+    answer: { verdict: 'incorrect', expected_number: 4, text: '사' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  await act()
+  await screen.findByRole('status')
+  fireEvent.keyDown(document.body, { key: 'Enter', code: 'Enter' })
+
+  await waitFor(() => expect(questionCreationRequests(fetchMock)).toHaveLength(2))
+  expect(answerRequests(fetchMock)).toHaveLength(1)
+})
+
+test('Enter on the focused next button draws one question, not two', async () => {
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1'), questionStub('q2'), questionStub('q3')],
+    answer: { verdict: 'correct', expected_number: 3, text: '삼' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+  await answerQuestion('3')
+  await screen.findByRole('status')
+
+  // `fireEvent` returns false when the default action was cancelled. On a focused button
+  // that default is the browser clicking it, a second Next that jsdom does not simulate.
+  nextButton().focus()
+  expect(fireEvent.keyDown(nextButton(), { key: 'Enter', code: 'Enter' })).toBe(false)
+
+  await waitFor(() => {
+    expect(container.querySelector('audio')?.getAttribute('src')).toBe(
+      '/api/exercises/numbers/questions/q2/audio',
+    )
+  })
+  expect(questionCreationRequests(fetchMock)).toHaveLength(2)
+})
+
+test('a held-down Enter does not skip past the verdict it just produced', async () => {
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1'), questionStub('q2')],
+    answer: { verdict: 'incorrect', expected_number: 3, text: '삼' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  const answerInput = screen.getByRole('textbox', { name: /answer/i })
+  fireEvent.change(answerInput, { target: { value: '4' } })
+  fireEvent.keyDown(answerInput, { key: 'Enter', code: 'Enter' })
+  await screen.findByRole('status')
+
+  // The same key, auto-repeating: moving on takes a fresh press.
+  fireEvent.keyDown(answerInput, { key: 'Enter', code: 'Enter', repeat: true })
+
+  expect(questionCreationRequests(fetchMock)).toHaveLength(1)
+  expect(answerRequests(fetchMock)).toHaveLength(1)
+  expect(screen.getByRole('status')).toBeDefined()
+})
+
 test('next draws a new question and clears the input and the previous feedback', async () => {
   const fetchMock = stubFetch({
     questions: [questionStub('q1'), questionStub('q2')],
@@ -559,7 +688,9 @@ test('keeps next disabled while the question has no verdict, even after typing a
   expect(nextButton().disabled).toBe(true)
 })
 
-test.each(['correct', 'incorrect', 'not_a_number'])(
+// `not_a_number` left this list when a typo stopped counting as an answer (user's request
+// after the ui-redesign sign-off, 2026-09-21): see the not-a-number test just below.
+test.each(['correct', 'incorrect'])(
   'enables next once submitting returns a %s verdict',
   async (verdict) => {
     const fetchMock = stubFetch({
@@ -576,6 +707,57 @@ test.each(['correct', 'incorrect', 'not_a_number'])(
     await screen.findByRole('status')
 
     expect(nextButton().disabled).toBe(false)
+    expect(answerRequests(fetchMock)).toHaveLength(1)
+  },
+)
+
+// A typo is not an answer: the question stays open, with no Next by button or by Enter,
+// until the user types digits or reveals.
+test('a not-a-number verdict keeps the question open: next locked, submit and show answer still usable', async () => {
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1'), questionStub('q2')],
+    answer: { verdict: 'not_a_number', expected_number: 5, text: '오' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  await answerQuestion('abc')
+  await screen.findByRole('status')
+
+  expect(nextButton().disabled).toBe(true)
+  expect(showAnswerButton().disabled).toBe(false)
+  expect(submitButton().disabled).toBe(false)
+
+  fireEvent.keyDown(document.body, { key: 'Enter', code: 'Enter' })
+  expect(questionCreationRequests(fetchMock)).toHaveLength(1)
+
+  // Enter in the answer field submits the retyped answer instead of moving on.
+  const answerInput = screen.getByRole('textbox', { name: /answer/i })
+  fireEvent.change(answerInput, { target: { value: '5' } })
+  fireEvent.keyDown(answerInput, { key: 'Enter', code: 'Enter' })
+
+  await waitFor(() => expect(answerRequests(fetchMock)).toHaveLength(2))
+  expect(answerRequests(fetchMock)[1].body).toEqual({ answer: '5' })
+  expect(questionCreationRequests(fetchMock)).toHaveLength(1)
+})
+
+test.each(['correct', 'incorrect'])(
+  'blocks any further submission once a %s verdict is shown',
+  async (verdict) => {
+    const fetchMock = stubFetch({
+      questions: [questionStub('q1')],
+      answer: { verdict, expected_number: 12, text: '십이' },
+    })
+
+    const { container } = render(<App />)
+    await waitForQuestion(container)
+    await answerQuestion('12')
+    await screen.findByRole('status')
+
+    expect(submitButton().disabled).toBe(true)
+    fireEvent.click(submitButton())
+
     expect(answerRequests(fetchMock)).toHaveLength(1)
   },
 )
@@ -604,8 +786,10 @@ test('show answer judges an empty answer, then displays the answer as a miss and
   expect(status.textContent).toMatch(/answer was/i)
   expect(status.textContent).not.toMatch(/\bcorrect\b/i)
   expect(status.textContent).not.toMatch(/not.*number/i)
-  expect(status.classList.contains('feedback-incorrect')).toBe(true)
-  expect(status.classList.contains('feedback-correct')).toBe(false)
+  // Styled as neither a right answer nor a typo: the neutral tone. This replaced two
+  // assertions on `styles.css` classes (`feedback-incorrect`, `feedback-correct`) when the
+  // page moved to the design primitives (ui-redesign T03, user's decision 2026-09-21).
+  expect(status.dataset.tone).toBe('neutral')
   expect(nextButton().disabled).toBe(false)
 })
 
@@ -675,22 +859,26 @@ test('next after a reveal draws a new question with a fresh, unrevealed state', 
   expect(status.textContent).not.toMatch(/answer was/i)
 })
 
-test('a submission after a reveal is worded as a submission again, not as the reveal', async () => {
-  stubFetch({
+// This replaced "a submission after a reveal is worded as a submission again": typing the
+// revealed number and submitting it would score a guess that was never made (user's
+// request after the ui-redesign sign-off, 2026-09-21).
+test('no answer can be submitted once the answer has been revealed', async () => {
+  const fetchMock = stubFetch({
     questions: [questionStub('q1')],
-    answer: { verdict: 'correct', expected_number: 7, text: '칠' },
+    answer: { verdict: 'not_a_number', expected_number: 7, text: '칠' },
   })
 
   const { container } = render(<App />)
   await waitForQuestion(container)
 
   fireEvent.click(showAnswerButton())
-  const revealed = await screen.findByRole('status')
-  expect(revealed.textContent).toMatch(/answer was/i)
+  await screen.findByRole('status')
 
   await answerQuestion('7')
 
-  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/\bcorrect\b/i))
+  expect(submitButton().disabled).toBe(true)
+  expect(answerRequests(fetchMock)).toHaveLength(1)
+  expect(screen.getByRole('status').textContent).toMatch(/answer was/i)
 })
 
 test('a failed reveal shows an error, keeps next locked and leaves show answer available to retry', async () => {
@@ -820,3 +1008,141 @@ test('never reveals the drawn number or its Korean text before an answer is subm
   expect(container.innerHTML).toContain('열일곱')
   expect(answerRequests(fetchMock)).toHaveLength(1)
 })
+
+/*
+ * ui-redesign T03: the page is now built from the design primitives in `components/`,
+ * with no behaviour change. vitest replaces CSS with empty strings and jsdom has no
+ * layout, so these pin only what the markup can show: roles and names, input attributes,
+ * `lang`, which icon each verdict gets, `tabindex`, and the `motion-safe:` guard.
+ */
+
+interface VerdictScenario {
+  name: string
+  answer: { verdict: string; expected_number: number; text: string }
+  act: () => Promise<void>
+}
+
+const VERDICT_SCENARIOS: VerdictScenario[] = [
+  {
+    name: 'correct',
+    answer: { verdict: 'correct', expected_number: 7, text: '칠' },
+    act: () => answerQuestion('7'),
+  },
+  {
+    name: 'incorrect',
+    answer: { verdict: 'incorrect', expected_number: 42, text: '마흔둘' },
+    act: () => answerQuestion('41'),
+  },
+  {
+    name: 'not a number',
+    answer: { verdict: 'not_a_number', expected_number: 5, text: '오' },
+    act: () => answerQuestion('abc'),
+  },
+  {
+    name: 'revealed',
+    answer: { verdict: 'not_a_number', expected_number: 42, text: '마흔둘' },
+    act: () => {
+      fireEvent.click(showAnswerButton())
+      return Promise.resolve()
+    },
+  },
+]
+
+/** Renders the page, waits for the first question, then produces the scenario's verdict. */
+async function renderVerdict(
+  scenario: VerdictScenario,
+): Promise<{ container: HTMLElement; status: HTMLElement }> {
+  stubFetch({ questions: [questionStub('q1')], answer: scenario.answer })
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+  await scenario.act()
+  const status = await screen.findByRole('status')
+  return { container, status }
+}
+
+function elementsWithPositiveTabindex(container: HTMLElement): Element[] {
+  return [...container.querySelectorAll('[tabindex]')].filter(
+    (element) => Number(element.getAttribute('tabindex')) > 0,
+  )
+}
+
+test('keeps every control role and accessible name once the first question has loaded', async () => {
+  stubFetch()
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  expect(screen.getByRole('heading', { name: 'Oral Korean' }).textContent).toBe('Oral Korean')
+  const selector = screen.getByRole('combobox', { name: /system/i })
+  expect(within(selector).getByRole('option', { name: /sino-korean/i })).toBeDefined()
+  expect(within(selector).getByRole('option', { name: /native korean/i })).toBeDefined()
+  expect(screen.getByRole('spinbutton', { name: /maximum/i })).toBeDefined()
+  expect(screen.getByRole('textbox', { name: /answer/i })).toBeDefined()
+  for (const name of [/replay/i, /submit/i, /next/i, /show answer/i]) {
+    expect(screen.getByRole('button', { name })).toBeDefined()
+  }
+})
+
+test('the answer field opens a digit keypad on phones and still accepts free text', async () => {
+  stubFetch()
+
+  render(<App />)
+
+  const answerInput = await screen.findByRole('textbox', { name: /answer/i })
+  // `type="text"` is load-bearing: a number input would sanitise "abc" away before the
+  // not-a-number verdict could ever be reached.
+  expect(answerInput.getAttribute('type')).toBe('text')
+  expect(answerInput.getAttribute('inputmode')).toBe('numeric')
+})
+
+test.each(VERDICT_SCENARIOS.filter((scenario) => ['incorrect', 'revealed'].includes(scenario.name)))(
+  'marks the Korean reading as Korean in the $name feedback',
+  async (scenario) => {
+    const { status } = await renderVerdict(scenario)
+
+    const korean = status.querySelectorAll('[lang="ko"]')
+    expect(korean).toHaveLength(1)
+    expect(korean[0].textContent).toBe('마흔둘')
+  },
+)
+
+test('gives each of the four verdicts its own icon, so they stay distinct without colour', async () => {
+  const iconMarkup: string[] = []
+  for (const scenario of VERDICT_SCENARIOS) {
+    const { status } = await renderVerdict(scenario)
+    const icon = status.querySelector('svg')
+    if (icon === null) {
+      throw new Error(`the ${scenario.name} verdict rendered no icon`)
+    }
+    iconMarkup.push(icon.outerHTML)
+    cleanup()
+    vi.unstubAllGlobals()
+  }
+
+  expect(new Set(iconMarkup).size).toBe(VERDICT_SCENARIOS.length)
+})
+
+test('no element has a positive tabindex, so tab order is DOM order, before and after a verdict', async () => {
+  stubFetch({ questions: [questionStub('q1')], answer: VERDICT_SCENARIOS[0].answer })
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+  expect(elementsWithPositiveTabindex(container)).toEqual([])
+
+  await answerQuestion('7')
+  await screen.findByRole('status')
+  expect(elementsWithPositiveTabindex(container)).toEqual([])
+})
+
+test.each(VERDICT_SCENARIOS)(
+  'applies feedback animations only through motion-safe: after a $name verdict',
+  async (scenario) => {
+    const { container } = await renderVerdict(scenario)
+
+    const animationTokens = classTokensIn(container).filter((token) => token.includes('animate-'))
+    // Not vacuous: every verdict has an entrance animation to guard.
+    expect(animationTokens.length).toBeGreaterThan(0)
+    for (const token of animationTokens) {
+      expect(token.startsWith('motion-safe:')).toBe(true)
+    }
+  },
+)
