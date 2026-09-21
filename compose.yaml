@@ -1,0 +1,16 @@
+# The backend speaks Korean from Linux because it cannot do so on Windows: see Dockerfile.
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Generated audio lands on the host, so a WAV can be listened to without entering
+      # the container and survives a rebuild. `.cache/` is already gitignored.
+      - ./.cache:/app/.cache
+      # The Korean checkpoint and the per-language BERT tokenizers MeloTTS pulls on first
+      # use. A named volume keeps them out of the image and out of every later rebuild.
+      - hf-cache:/root/.cache/huggingface
+
+volumes:
+  hf-cache:
