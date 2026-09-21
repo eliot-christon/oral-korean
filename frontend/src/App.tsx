@@ -89,10 +89,9 @@ function App() {
   }
 
   // Draws the very first question once the catalogue arrives. `selectedSystem` is
-  // deliberately not a dependency (oxlint's exhaustive-deps warning on this hook is
-  // expected and left in place): a system change afterwards is drawn once, from the
-  // selector's own `onChange` (`handleSystemChange`) - adding the dependency here would
-  // draw a second, redundant question on every change.
+  // deliberately not a dependency (see the oxlint-disable comment below): a system change
+  // afterwards is drawn once, from the selector's own `onChange` (`handleSystemChange`) -
+  // adding the dependency here would draw a second, redundant question on every change.
   useEffect(() => {
     if (systems === null) {
       return
@@ -102,6 +101,7 @@ function App() {
       // oxlint-disable-next-line react/set-state-in-effect -- syncing with fetched data
       void drawQuestion(selectedSystem, info.maximum)
     }
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- selectedSystem omitted on purpose
   }, [systems])
 
   function handleSystemChange(system: NumeralSystem): void {
