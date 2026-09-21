@@ -51,7 +51,10 @@
  *     answer impossible to type at all - so the ticket's "not a number" acceptance
  *     criterion is only reachable if this field accepts arbitrary text.
  *   - submit/replay/next are `<button>`s (`button` role) named /submit/i, /replay/i,
- *     /next/i respectively.
+ *     /next/i respectively, and the reveal control is a fourth one named /show answer/i
+ *     (`numbers-answer-before-next`). Next is locked while a question is in hand without a
+ *     verdict, and unlocked by a verdict from either Submit or Show answer; Show answer
+ *     is a Submit of an empty answer, so it goes through the same answer endpoint.
  *   - the question's `<audio>` element is a plain `<audio>` tag, queried via
  *     `container.querySelector('audio')` since neither `@testing-library/dom` nor jsdom
  *     gives it a distinguishing ARIA role.
@@ -196,6 +199,19 @@ async function answerQuestion(value: string): Promise<void> {
   fireEvent.click(screen.getByRole('button', { name: /submit/i }))
 }
 
+/** Resolves once a question has actually arrived, i.e. once its `<audio>` is mounted. */
+async function waitForQuestion(container: HTMLElement): Promise<void> {
+  await waitFor(() => expect(container.querySelector('audio')).not.toBeNull())
+}
+
+function nextButton(): HTMLButtonElement {
+  return screen.getByRole('button', { name: /next/i }) as HTMLButtonElement
+}
+
+function showAnswerButton(): HTMLButtonElement {
+  return screen.getByRole('button', { name: /show answer|reveal/i }) as HTMLButtonElement
+}
+
 let playSpy: ReturnType<typeof vi.spyOn>
 
 beforeEach(() => {
@@ -300,12 +316,17 @@ test('bounds the range control by the selected systems catalogue minimum and max
 test('a custom maximum typed into the range control is sent on the next draw for the same system', async () => {
   const fetchMock = stubFetch({ questions: [questionStub('q1'), questionStub('q2')] })
 
-  render(<App />)
+  const { container } = render(<App />)
   await waitFor(() => expect(questionCreationRequests(fetchMock)).toHaveLength(1))
 
   const maxInput = (await screen.findByRole('spinbutton', { name: /maximum/i })) as HTMLInputElement
   fireEvent.change(maxInput, { target: { value: '10' } })
   expect(maxInput.value).toBe('10')
+
+  // Next is locked until the question has a verdict, so q1 is answered before moving on.
+  await waitForQuestion(container)
+  await answerQuestion('1')
+  await screen.findByRole('status')
 
   fireEvent.click(screen.getByRole('button', { name: /next/i }))
 
@@ -321,12 +342,17 @@ test('a maximum typed beyond the selected systems bounds is clamped, not sent as
   // (1-99) be asked for up to whatever the user typed, one request too late.
   const fetchMock = stubFetch({ questions: [questionStub('q1'), questionStub('q2')] })
 
-  render(<App />)
+  const { container } = render(<App />)
   await waitFor(() => expect(questionCreationRequests(fetchMock)).toHaveLength(1))
 
   const maxInput = (await screen.findByRole('spinbutton', { name: /maximum/i })) as HTMLInputElement
   fireEvent.change(maxInput, { target: { value: '500' } })
   expect(maxInput.value).toBe(String(SINO_SYSTEM_INFO.maximum))
+
+  // Next is locked until the question has a verdict, so q1 is answered before moving on.
+  await waitForQuestion(container)
+  await answerQuestion('1')
+  await screen.findByRole('status')
 
   fireEvent.click(screen.getByRole('button', { name: /next/i }))
 
@@ -362,7 +388,7 @@ test('switching systems drops a custom maximum override in favour of the new sys
   })
 })
 
-test('the replay control and the audio element stay unusable until the first question has loaded', async () => {
+test('the replay and show-answer controls and the audio element stay unusable until the first question has loaded', async () => {
   // A bespoke fetch mock, not `stubFetch`: this test needs to observe the gap between the
   // systems catalogue arriving and the first create-question call resolving, which
   // `stubFetch`'s all-at-once promises can't hold open. `resolveQuestion` defaults to a
@@ -391,11 +417,13 @@ test('the replay control and the audio element stay unusable until the first que
 
   const replayButton = await screen.findByRole('button', { name: /replay/i })
   expect(replayButton.hasAttribute('disabled')).toBe(true)
+  expect(showAnswerButton().disabled).toBe(true)
   expect(container.querySelector('audio')).toBeNull()
 
   resolveQuestion()
 
   await waitFor(() => expect(replayButton.hasAttribute('disabled')).toBe(false))
+  expect(showAnswerButton().disabled).toBe(false)
   expect(container.querySelector('audio')?.getAttribute('src')).toBe(
     '/api/exercises/numbers/questions/q1/audio',
   )
@@ -517,6 +545,186 @@ test('next draws a new question and clears the input and the previous feedback',
   expect(status === null || status.textContent === '').toBe(true)
 })
 
+test('keeps next disabled while the question has no verdict, even after typing an answer', async () => {
+  stubFetch({ questions: [questionStub('q1')] })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  expect(nextButton().disabled).toBe(true)
+
+  const answerInput = (await screen.findByRole('textbox', { name: /answer/i })) as HTMLInputElement
+  fireEvent.change(answerInput, { target: { value: '7' } })
+
+  expect(nextButton().disabled).toBe(true)
+})
+
+test.each(['correct', 'incorrect', 'not_a_number'])(
+  'enables next once submitting returns a %s verdict',
+  async (verdict) => {
+    const fetchMock = stubFetch({
+      questions: [questionStub('q1')],
+      answer: { verdict, expected_number: 12, text: '십이' },
+    })
+
+    const { container } = render(<App />)
+    await waitForQuestion(container)
+    // Locked first, so the unlock below is a change and not a button that was never locked.
+    expect(nextButton().disabled).toBe(true)
+
+    await answerQuestion('12')
+    await screen.findByRole('status')
+
+    expect(nextButton().disabled).toBe(false)
+    expect(answerRequests(fetchMock)).toHaveLength(1)
+  },
+)
+
+test('show answer judges an empty answer, then displays the answer as a miss and unlocks next', async () => {
+  // The backend answers an empty string with `not_a_number` but still attaches the expected
+  // number and its Korean text (`judge_answer`), which is all a reveal needs.
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1')],
+    answer: { verdict: 'not_a_number', expected_number: 42, text: '사십이' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+  expect(nextButton().disabled).toBe(true)
+
+  fireEvent.click(showAnswerButton())
+
+  const status = await screen.findByRole('status')
+  expect(answerRequests(fetchMock)).toHaveLength(1)
+  expect(answerRequests(fetchMock)[0].body).toEqual({ answer: '' })
+  expect(status.textContent).toContain('42')
+  expect(status.textContent).toContain('사십이')
+  // Worded and styled as a miss: a reveal is neither a right answer nor a typo, so it must
+  // read as neither "Correct!" nor "That is not a number".
+  expect(status.textContent).toMatch(/answer was/i)
+  expect(status.textContent).not.toMatch(/\bcorrect\b/i)
+  expect(status.textContent).not.toMatch(/not.*number/i)
+  expect(status.classList.contains('feedback-incorrect')).toBe(true)
+  expect(status.classList.contains('feedback-correct')).toBe(false)
+  expect(nextButton().disabled).toBe(false)
+})
+
+test('show answer is disabled once a submitted answer already has a verdict', async () => {
+  stubFetch({
+    questions: [questionStub('q1')],
+    answer: { verdict: 'incorrect', expected_number: 42, text: '사십이' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+  expect(showAnswerButton().disabled).toBe(false)
+
+  await answerQuestion('41')
+  await screen.findByRole('status')
+
+  expect(showAnswerButton().disabled).toBe(true)
+})
+
+test('show answer is one-shot: after it is used the button is disabled and sends nothing more', async () => {
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1')],
+    answer: { verdict: 'not_a_number', expected_number: 42, text: '사십이' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  fireEvent.click(showAnswerButton())
+  await screen.findByRole('status')
+  expect(showAnswerButton().disabled).toBe(true)
+
+  fireEvent.click(showAnswerButton())
+
+  expect(answerRequests(fetchMock)).toHaveLength(1)
+})
+
+test('next after a reveal draws a new question with a fresh, unrevealed state', async () => {
+  const fetchMock = stubFetch({
+    questions: [questionStub('q1'), questionStub('q2')],
+    answer: { verdict: 'not_a_number', expected_number: 42, text: '사십이' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  fireEvent.click(showAnswerButton())
+  await screen.findByRole('status')
+  fireEvent.click(nextButton())
+
+  await waitFor(() => expect(questionCreationRequests(fetchMock)).toHaveLength(2))
+  await waitFor(() => {
+    expect(container.querySelector('audio')?.getAttribute('src')).toBe(
+      '/api/exercises/numbers/questions/q2/audio',
+    )
+  })
+  expect(screen.queryByRole('status')).toBeNull()
+  // The new question starts locked again, with its own reveal available.
+  expect(nextButton().disabled).toBe(true)
+  expect(showAnswerButton().disabled).toBe(false)
+
+  // A real submission on the new question must not inherit the reveal wording: with the
+  // stub's `not_a_number` verdict it reads as a typo, not as "The answer was ...".
+  await answerQuestion('abc')
+  const status = await screen.findByRole('status')
+  expect(status.textContent).toMatch(/not.*number/i)
+  expect(status.textContent).not.toMatch(/answer was/i)
+})
+
+test('a submission after a reveal is worded as a submission again, not as the reveal', async () => {
+  stubFetch({
+    questions: [questionStub('q1')],
+    answer: { verdict: 'correct', expected_number: 7, text: '칠' },
+  })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  fireEvent.click(showAnswerButton())
+  const revealed = await screen.findByRole('status')
+  expect(revealed.textContent).toMatch(/answer was/i)
+
+  await answerQuestion('7')
+
+  await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/\bcorrect\b/i))
+})
+
+test('a failed reveal shows an error, keeps next locked and leaves show answer available to retry', async () => {
+  const fetchMock = stubFetch({ questions: [questionStub('q1')], answerRejects: true })
+
+  const { container } = render(<App />)
+  await waitForQuestion(container)
+
+  fireEvent.click(showAnswerButton())
+
+  const alert = await screen.findByRole('alert')
+  expect(alert.textContent).toBeTruthy()
+  expect(answerRequests(fetchMock)).toHaveLength(1)
+  // No verdict came back, so nothing is shown and nothing is unlocked: a flaky connection
+  // must not turn into a way to skip a question.
+  expect(screen.queryByRole('status')).toBeNull()
+  expect(nextButton().disabled).toBe(true)
+  expect(showAnswerButton().disabled).toBe(false)
+})
+
+test('after a failed draw next stays available, so the user can retry', async () => {
+  // With no question in hand there is nothing to skip, and Next is the only retry control:
+  // locking it here would strand the user on the error message until a reload.
+  const fetchMock = stubFetch({ questionsRejects: true })
+
+  render(<App />)
+  await screen.findByRole('alert')
+  expect(nextButton().disabled).toBe(false)
+
+  fireEvent.click(nextButton())
+
+  await waitFor(() => expect(questionCreationRequests(fetchMock)).toHaveLength(2))
+})
+
 test('shows a visible error message when the create-question request fails', async () => {
   stubFetch({ questionsRejects: true })
 
@@ -588,7 +796,7 @@ test('shows a visible error, not a blank page, when the systems catalogue itself
   expect(screen.queryByRole('combobox')).toBeNull()
 })
 
-test('never reveals the drawn number or its Korean text before an answer is submitted', async () => {
+test('never reveals the drawn number or its Korean text before an answer is submitted or revealed', async () => {
   const fetchMock = stubFetch({
     questions: [questionStub('q1')],
     answer: { verdict: 'correct', expected_number: 17, text: '열일곱' },
@@ -603,4 +811,12 @@ test('never reveals the drawn number or its Korean text before an answer is subm
   expect(container.innerHTML).not.toContain('17')
   expect(container.innerHTML).not.toContain('열일곱')
   expect(answerRequests(fetchMock)).toHaveLength(0)
+
+  // The one other way the answer can arrive is Show answer, and it is a deliberate user
+  // action exactly like Submit: absent until it is clicked, present once it has been.
+  fireEvent.click(showAnswerButton())
+  await screen.findByRole('status')
+  expect(container.innerHTML).toContain('17')
+  expect(container.innerHTML).toContain('열일곱')
+  expect(answerRequests(fetchMock)).toHaveLength(1)
 })
