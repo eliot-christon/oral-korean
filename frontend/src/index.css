@@ -1,9 +1,118 @@
-:root {
-  color-scheme: light dark;
-  font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+@import "tailwindcss";
+
+/* Self-hosted fonts (OFL-1.1), bundled by Vite: never load a stylesheet or a font from
+   another host (tests/test_frontend_assets.py checks it). Jua is split into
+   unicode-range slices, so a page downloads only the Hangul it actually shows. */
+@import "@fontsource/jua";
+@import "@fontsource-variable/nunito";
+
+/* Design tokens: the only place colours, radii, shadows, fonts and motion are defined.
+   Components use the utilities these generate (bg-primary, rounded-card, shadow-card,
+   font-display, animate-pop, ...), never raw hex or arbitrary colour values. Tailwind's
+   default palette is cleared, so a stray `bg-red-500` generates nothing. */
+@theme {
+  --color-*: initial;
+
+  --color-ground: #fff6ec;
+  --color-surface: #ffffff;
+  --color-ink: #2a1e3f;
+  --color-muted: #62587a;
+  --color-line: #8e84a6;
+
+  --color-primary: #6b3cf0;
+  --color-primary-strong: #5527d6;
+  --color-primary-soft: #efe9ff;
+  --color-accent: #ffc933;
+  --color-accent-strong: #ffb703;
+
+  --color-success: #13904f;
+  --color-success-soft: #e2f7ea;
+  --color-success-ink: #0d5e33;
+  --color-error: #e5484d;
+  --color-error-soft: #ffe9e9;
+  --color-error-ink: #a11d2a;
+  --color-warning: #f59e0b;
+  --color-warning-soft: #fff3d6;
+  --color-warning-ink: #874600;
+
+  --font-sans: "Nunito Variable", "Jua", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Jua", "Nunito Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --radius-card: 1.5rem;
+  --radius-field: 1rem;
+
+  --shadow-soft: 0 1px 2px color-mix(in oklab, var(--color-ink) 8%, transparent),
+    0 4px 12px -4px color-mix(in oklab, var(--color-ink) 12%, transparent);
+  --shadow-card: 0 1px 2px color-mix(in oklab, var(--color-ink) 6%, transparent),
+    0 16px 40px -16px color-mix(in oklab, var(--color-primary) 35%, transparent);
+  --shadow-glow: 0 8px 20px -8px color-mix(in oklab, var(--color-primary) 70%, transparent);
+
+  --animate-pop: pop 360ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  --animate-shake: shake 380ms ease-in-out both;
+  --animate-slide-in: slide-in 280ms ease-out both;
+
+  @keyframes pop {
+    0% {
+      opacity: 0;
+      transform: scale(0.85);
+    }
+    60% {
+      opacity: 1;
+      transform: scale(1.04);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+
+  @keyframes shake {
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+    20% {
+      transform: translateX(-6px);
+    }
+    40% {
+      transform: translateX(6px);
+    }
+    60% {
+      transform: translateX(-4px);
+    }
+    80% {
+      transform: translateX(4px);
+    }
+  }
+
+  @keyframes slide-in {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }
 
-body {
-  margin: 0;
-  min-height: 100vh;
+@layer base {
+  /* Light only, by decision: without this, an OS in dark mode would get dark native
+     controls and scrollbars on a bright page. */
+  :root {
+    color-scheme: light;
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--color-ground);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+  }
 }
