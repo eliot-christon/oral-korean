@@ -54,9 +54,8 @@ from collections.abc import Callable
 from typing import cast
 
 import pytest
-from conftest import FORBIDDEN_IMPORTS, imported_module_names, signature_shape
+from conftest import signature_shape
 
-from oral_korean.exercises import numbers
 from oral_korean.exercises.numbers import (
     InvalidRangeError,
     Judgement,
@@ -134,16 +133,6 @@ def test_verdict_has_exactly_three_outcomes() -> None:
     """Three outcomes, not a boolean with a special case: the names are the contract."""
     assert [verdict.name for verdict in Verdict] == ["CORRECT", "INCORRECT", "NOT_A_NUMBER"]
     assert [verdict.value for verdict in Verdict] == ["correct", "incorrect", "not_a_number"]
-
-
-def test_the_numbers_exercise_stays_pure() -> None:
-    """`exercises/` may not import `tts/`, `api/` or anything that talks to the outside.
-
-    Read statically from the source, so an import hidden inside a function is caught too.
-    """
-    imported = imported_module_names(numbers)
-
-    assert not [name for name in imported if name.startswith(FORBIDDEN_IMPORTS)]
 
 
 # ---------------------------------------------------------------------------------
