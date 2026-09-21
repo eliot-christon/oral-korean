@@ -21,13 +21,16 @@ def _default_port() -> int:
     return int(os.environ.get("ORAL_KOREAN_PORT", "8000"))
 
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _default_frontend_dist() -> Path:
-    return Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    return _PROJECT_ROOT / "frontend" / "dist"
 
 
 def _default_audio_cache_dir() -> Path:
     # Under `.cache/`, which `.gitignore` already covers as a runtime cache.
-    return Path(__file__).resolve().parents[2] / ".cache" / "audio"
+    return _PROJECT_ROOT / ".cache" / "audio"
 
 
 @dataclass(frozen=True)
