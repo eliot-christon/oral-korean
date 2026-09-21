@@ -56,8 +56,13 @@ from pathlib import Path
 from conftest import NumbersHarness
 
 FRONTEND_SRC = Path(__file__).resolve().parent.parent / "frontend" / "src"
+FRONTEND_ROOT = FRONTEND_SRC.parent
 
 PARAM_MARKER = "<param>"
+
+# A bare "http://" or "https://": T02's fonts and stylesheet must be self-hosted npm
+# packages bundled by Vite, never loaded from a CDN such as Google Fonts at runtime.
+_EXTERNAL_URL_PATTERN = re.compile(r"https?://")
 
 # A quoted or backticked string starting with "/api/", up to the next quote/backtick.
 _API_LITERAL_PATTERN = re.compile(r"""['"`](/api/[^'"`]*)['"`]""")
@@ -144,3 +149,43 @@ def test_every_frontend_api_literal_matches_a_registered_route(
     assert not unmatched, (
         f"frontend/src/ references API path(s) the backend does not register: {unmatched}"
     )
+
+
+def _html_files_directly_under_frontend_root() -> list[Path]:
+    """The `.html` files the dev server can serve: `frontend/index.html` today, and
+    `frontend/preview.html` once T02
+    (`.claude/work/ui-redesign/tickets/T02-design-foundation.md`) creates it. Non-recursive
+    on purpose: `frontend/dist/` (a build artefact, once one exists) and
+    `frontend/node_modules/` must never be scanned."""
+    return sorted(FRONTEND_ROOT.glob("*.html"))
+
+
+def _css_files_under_frontend_src() -> list[Path]:
+    """Every `.css` file anywhere under `frontend/src/`: today `index.css` and
+    `styles.css`, and any file T02's font imports or `@theme` tokens add."""
+    return sorted(FRONTEND_SRC.rglob("*.css"))
+
+
+def test_stylesheets_and_fonts_are_self_hosted() -> None:
+    """T02: no `.html` file directly under `frontend/` and no `.css` file under
+    `frontend/src/` loads a stylesheet or a font from another host. The chosen font
+    package(s) ship as npm dependencies and are bundled by Vite specifically so nothing
+    here depends on a CDN such as Google Fonts at runtime (the later deployment epic's own
+    reason - see `epic.md`, "A Korean-friendly font ... self-hosted from an npm package
+    rather than loaded from a CDN at runtime"). Adding
+    `@import url("https://fonts.googleapis.com/css2?family=Jua");` to `index.css`, or a
+    `<link rel="stylesheet" href="https://...">` to `preview.html`, must fail this test.
+
+    Scanned, as of this test: `frontend/index.html`, `frontend/preview.html` (once T02
+    creates it), and every `.css` file under `frontend/src/` (today `index.css` and
+    `styles.css`).
+    """
+    scanned = _html_files_directly_under_frontend_root() + _css_files_under_frontend_src()
+
+    offenders: dict[str, str] = {}
+    for path in scanned:
+        match = _EXTERNAL_URL_PATTERN.search(path.read_text(encoding="utf-8"))
+        if match is not None:
+            offenders[str(path.relative_to(FRONTEND_ROOT))] = match.group(0)
+
+    assert not offenders, f"external stylesheet/font reference(s) found: {offenders}"
