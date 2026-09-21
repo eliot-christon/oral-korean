@@ -79,6 +79,9 @@ npm test                             # vitest
 npm run build                        # production build
 ```
 
+While `npm run dev` runs, http://localhost:5173/preview.html shows the design system
+(colours, type, every UI component in every state) with no backend needed.
+
 `uv run pre-commit install` wires the Python checks into `git commit`. Note that
 pre-commit covers **Python only**: a green commit says nothing about whether the frontend
 builds. CI runs both sides on every push and pull request.
@@ -92,7 +95,7 @@ src/oral_korean/
   exercises/             one module per exercise type
   korean/                language primitives shared between exercises
   tts/                   speech synthesis behind a one-method interface
-frontend/                Vite + React + TypeScript
+frontend/                Vite + React + TypeScript + Tailwind CSS
 tests/                   pytest suite
 ```
 
