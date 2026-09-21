@@ -34,12 +34,19 @@ function errorMessageOf(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback
 }
 
-function feedbackMessage(result: AnswerResponse): string {
+function answerWas(result: AnswerResponse): string {
+  return `The answer was ${result.expected_number} (${result.text}).`
+}
+
+function feedbackMessage(result: AnswerResponse, revealed: boolean): string {
+  if (revealed) {
+    return answerWas(result)
+  }
   if (result.verdict === 'correct') {
     return 'Correct!'
   }
   if (result.verdict === 'incorrect') {
-    return `Incorrect. The answer was ${result.expected_number} (${result.text}).`
+    return `Incorrect. ${answerWas(result)}`
   }
   return 'That is not a number. Type the digits you heard.'
 }
@@ -51,6 +58,9 @@ function App() {
   const [question, setQuestion] = useState<PendingQuestion | null>(null)
   const [answerValue, setAnswerValue] = useState('')
   const [feedback, setFeedback] = useState<AnswerResponse | null>(null)
+  // Whether `feedback` came from Show answer rather than from a submitted answer, which is
+  // what picks "The answer was ..." over the verdict's own wording.
+  const [revealed, setRevealed] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
 
@@ -74,10 +84,15 @@ function App() {
 
   const systemInfo = systems?.find((entry) => entry.system === selectedSystem) ?? null
   const maximumValue = maximumOverride ?? systemInfo?.maximum ?? null
+  // A question in hand that has no verdict yet. Next stays locked while this holds, so a
+  // number cannot be skipped unanswered: Submit or Show answer ends it. With no question
+  // in hand (a draw failed) there is nothing to skip, and Next is the only way to retry.
+  const awaitingVerdict = question !== null && feedback === null
 
   async function drawQuestion(system: NumeralSystem, maximum: number): Promise<void> {
     setError(null)
     setFeedback(null)
+    setRevealed(false)
     setAnswerValue('')
     setQuestion(null)
     try {
@@ -137,8 +152,26 @@ function App() {
     try {
       const result = await submitAnswer(question.questionId, answerValue)
       setFeedback(result)
+      setRevealed(false)
     } catch (err) {
       setError(errorMessageOf(err, 'Could not submit the answer. Is the backend running?'))
+    }
+  }
+
+  // A reveal is a deliberate submission of an empty answer, so the answer still only
+  // arrives on request. The backend judges an empty string `not_a_number` but, like every
+  // verdict, attaches the expected number and its Korean text, so no endpoint of its own
+  // is needed. `revealed` keeps that verdict from being worded as a typo.
+  async function handleReveal(): Promise<void> {
+    if (!question || feedback) {
+      return
+    }
+    try {
+      const result = await submitAnswer(question.questionId, '')
+      setFeedback(result)
+      setRevealed(true)
+    } catch (err) {
+      setError(errorMessageOf(err, 'Could not reveal the answer. Is the backend running?'))
     }
   }
 
@@ -194,7 +227,10 @@ function App() {
             <button type="button" onClick={handleReplay} disabled={!question}>
               Replay
             </button>
-            <button type="button" onClick={handleNext} disabled={!systemInfo}>
+            <button type="button" onClick={() => void handleReveal()} disabled={!awaitingVerdict}>
+              Show answer
+            </button>
+            <button type="button" onClick={handleNext} disabled={!systemInfo || awaitingVerdict}>
               Next
             </button>
           </div>
@@ -225,8 +261,11 @@ function App() {
           </div>
 
           {feedback && (
-            <p role="status" className={`feedback feedback-${feedback.verdict}`}>
-              {feedbackMessage(feedback)}
+            <p
+              role="status"
+              className={`feedback feedback-${revealed ? 'incorrect' : feedback.verdict}`}
+            >
+              {feedbackMessage(feedback, revealed)}
             </p>
           )}
         </>
