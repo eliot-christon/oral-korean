@@ -71,6 +71,28 @@ export function EyeIcon({ className = 'size-5' }: { className?: string }) {
   )
 }
 
+/** A phone keypad: the numbers exercise, in the navigation. */
+export function KeypadIcon({ className = 'size-6' }: { className?: string }) {
+  return (
+    <Svg className={className}>
+      {[4, 9.5, 15].map((y) =>
+        [6, 12, 18].map((x) => <circle key={`${x},${y}`} cx={x} cy={y} r={1} />),
+      )}
+      <circle cx={12} cy={20.5} r={1} />
+    </Svg>
+  )
+}
+
+/** An open book: the vocabulary, in the navigation. */
+export function BookIcon({ className = 'size-6' }: { className?: string }) {
+  return (
+    <Svg className={className}>
+      <path d="M12 6.5C10 5 7 4.5 3.5 5v13c3.5-.5 6.5 0 8.5 1.5 2-1.5 5-2 8.5-1.5V5c-3.5-.5-6.5 0-8.5 1.5z" />
+      <path d="M12 6.5v13" />
+    </Svg>
+  )
+}
+
 export function ChevronDownIcon({ className = 'size-5' }: { className?: string }) {
   return (
     <Svg className={className}>
