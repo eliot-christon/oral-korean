@@ -8,6 +8,9 @@ services:
       # Generated audio lands on the host, so a WAV can be listened to without entering
       # the container and survives a rebuild. `.cache/` is already gitignored.
       - ./.cache:/app/.cache
+      # The vocabulary database, shared with the host run mode and kept across rebuilds.
+      # Not under `.cache/`: a cache may be deleted to reclaim space, this is the user's data.
+      - ./.data:/app/.data
       # The Korean checkpoint and the per-language BERT tokenizers MeloTTS pulls on first
       # use. A named volume keeps them out of the image and out of every later rebuild.
       - hf-cache:/root/.cache/huggingface

@@ -21,6 +21,9 @@ frontend/dist/
 # Runtime caches
 .cache/
 
+# The user's vocabulary database: their own data, never committed
+.data/
+
 # Claude
 .claude/
 CLAUDE.md
