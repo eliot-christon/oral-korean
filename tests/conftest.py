@@ -8,9 +8,10 @@ import inspect
 import wave
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
-from typing import Literal
+from typing import Final, Literal
 
 import pytest
 from fastapi import FastAPI
@@ -36,12 +37,34 @@ def _isolate_the_default_database_path(
     monkeypatch.setenv("ORAL_KOREAN_DATABASE_PATH", str(tmp_path / "oral-korean.sqlite3"))
 
 
+HARNESS_START: Final = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
+"""Where every harness clock starts: the instant the vocabulary tests call T0."""
+
+
+class FakeClock:
+    """A clock a test moves by hand, injected as `create_app`'s `clock`.
+
+    A fresh instance per app (never shared): `now` is mutable state.
+    """
+
+    def __init__(self, start: datetime) -> None:
+        self.now = start
+
+    def __call__(self) -> datetime:
+        return self.now
+
+    def advance(self, delta: timedelta) -> None:
+        """Move the clock forward by `delta`."""
+        self.now += delta
+
+
 @dataclass
 class NumbersHarness:
-    """A `create_app` instance wired to a `FakeSpeechEngine`, ready for the numbers routes.
+    """A `create_app` instance wired to a `FakeSpeechEngine`, a `FakeClock` and a database.
 
-    Reused by T05's asset test, which is why this lives in `conftest.py` rather than only
-    in `test_api_numbers.py`.
+    Named after the numbers exercise, its first user, and kept under that name so the numbers
+    tests stay untouched; the vocabulary route tests (vocab-core T05) use the same one, which
+    is why this lives in `conftest.py`. Numbers-exercise T05's asset test reuses it too.
 
     Attributes:
         app: the `FastAPI` instance itself, so a test can reach into `app.state` for the
@@ -50,13 +73,16 @@ class NumbersHarness:
         client: a `TestClient` bound to `app`.
         engine: the `FakeSpeechEngine` injected into `app`, so a test can inspect
             `engine.calls` to check what was (or was not) synthesised, and how many times.
-        config: the `AppConfig` the app was built from.
+        config: the `AppConfig` the app was built from; its `database_path` is this
+            instance's own file under `base_dir`, not yet created.
+        clock: the `FakeClock` injected into `app`, starting at `HARNESS_START`.
     """
 
     app: FastAPI
     client: TestClient
     engine: FakeSpeechEngine
     config: AppConfig
+    clock: FakeClock
 
 
 def build_numbers_harness(
@@ -65,20 +91,27 @@ def build_numbers_harness(
     """Build one isolated `NumbersHarness` rooted at `base_dir`.
 
     A plain function as well as a fixture, so a test that needs two independent app
-    instances (the pending-question-store isolation contract) can call it twice with two
-    different directories instead of juggling two fixtures for one test.
+    instances (the pending-question-store and database isolation contracts) can call it
+    twice with two different directories instead of juggling two fixtures for one test.
 
     Args:
-        base_dir: root directory for this instance's frontend/audio-cache directories.
+        base_dir: root directory for this instance's frontend, audio cache and database.
         engine: the `FakeSpeechEngine` to inject; `None` builds a fresh default one. A
             test that needs to observe a synthesis failure passes its own
             `FakeSpeechEngine(error=...)` or `FakeSpeechEngine(behaviour="writes_nothing")`
             here instead of reaching into the harness after the fact.
     """
     engine = engine if engine is not None else FakeSpeechEngine()
-    config = AppConfig(frontend_dist=base_dir / "dist", audio_cache_dir=base_dir / "audio")
-    app = create_app(config, speech_engine=engine)
-    return NumbersHarness(app=app, client=TestClient(app), engine=engine, config=config)
+    clock = FakeClock(HARNESS_START)
+    config = AppConfig(
+        frontend_dist=base_dir / "dist",
+        audio_cache_dir=base_dir / "audio",
+        database_path=base_dir / "data" / "vocabulary.sqlite3",
+    )
+    app = create_app(config, speech_engine=engine, clock=clock)
+    return NumbersHarness(
+        app=app, client=TestClient(app), engine=engine, config=config, clock=clock
+    )
 
 
 @pytest.fixture
