@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from oral_korean.api.routes import health, numbers
+from oral_korean.api.routes import health, numbers, vocab_words
 from oral_korean.config import AppConfig
 from oral_korean.exercises.numbers import NumberQuestion
+from oral_korean.storage.database import Database
+from oral_korean.storage.words import WordStore
 from oral_korean.tts.base import SpeechEngine
 from oral_korean.tts.cache import AudioCache
 from oral_korean.tts.melo_engine import MeloSpeechEngine
@@ -21,8 +26,15 @@ _BUILD_MESSAGE = (
 )
 
 
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
 def create_app(
-    config: AppConfig | None = None, *, speech_engine: SpeechEngine | None = None
+    config: AppConfig | None = None,
+    *,
+    speech_engine: SpeechEngine | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> FastAPI:
     """Build a fresh FastAPI application instance.
 
@@ -34,6 +46,9 @@ def create_app(
         speech_engine: the engine behind the audio cache. `None` builds a
             `MeloSpeechEngine`, which is free to construct - tests inject a fake here so
             no route ever loads MeloTTS.
+        clock: returns the current instant, timezone-aware, for everything the vocabulary
+            dates or reads at a moment in time. `None` reads the real UTC time - tests
+            inject a clock they can move, so every statistic is checked at a known instant.
     """
     config = config or AppConfig()
     engine = speech_engine if speech_engine is not None else MeloSpeechEngine()
@@ -47,10 +62,14 @@ def create_app(
         voice=config.tts_voice,
         speed=config.tts_speed,
     )
+    # Opens nothing: the file, its directory and its schema come with the first vocab request.
+    app.state.word_store = WordStore(Database(config.database_path))
+    app.state.clock = clock if clock is not None else _utc_now
 
     api_router = APIRouter(prefix="/api")
     api_router.include_router(health.router)
     api_router.include_router(numbers.router)
+    api_router.include_router(vocab_words.router)
 
     async def api_not_found(_full_path: str = "") -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
