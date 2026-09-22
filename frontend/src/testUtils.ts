@@ -16,3 +16,42 @@ export function classTokensIn(container: HTMLElement): string[] {
     match[1].split(/\s+/).filter((token) => token.length > 0),
   )
 }
+
+/** The part of a `fetch` `Response` the API wrappers read, for a stubbed `fetch` to resolve. */
+export function jsonResponse(
+  body: unknown,
+  status = 200,
+): { ok: boolean; status: number; json: () => Promise<unknown> } {
+  return { ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) }
+}
+
+/** The statistics of a word never reviewed, as the backend sends them: nothing known. */
+export const NEW_WORD_STATISTICS = {
+  score: null,
+  recall: null,
+  stability: null,
+  difficulty: null,
+  phase: 'new',
+  next_review: null,
+  last_review: null,
+  due: false,
+  review_count: 0,
+  lapse_count: 0,
+}
+
+/**
+ * A word shaped like the vocabulary routes' `WordResponse`: new, untagged, added
+ * 2026-09-22, unless `overrides` says otherwise.
+ */
+export function wordStub(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 1,
+    korean: '사과',
+    translations: ['apple'],
+    tags: [],
+    familiarity: 'new',
+    added_at: '2026-09-22T10:00:00Z',
+    statistics: NEW_WORD_STATISTICS,
+    ...overrides,
+  }
+}
