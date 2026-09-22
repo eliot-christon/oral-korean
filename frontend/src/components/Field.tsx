@@ -9,13 +9,18 @@ import { ChevronDownIcon } from './icons'
 type FieldProps =
   | ({ label: ReactNode; as?: 'input' } & ComponentProps<'input'>)
   | ({ label: ReactNode; as: 'select' } & ComponentProps<'select'>)
+  | ({ label: ReactNode; as: 'textarea' } & ComponentProps<'textarea'>)
 
 // text-base keeps input text at 16px: iOS Safari zooms into anything smaller on focus.
 const CONTROL =
-  'min-h-12 w-full rounded-field border-2 border-line bg-surface px-4 text-base text-ink ' +
+  'w-full rounded-field border-2 border-line bg-surface px-4 text-base text-ink ' +
   'transition-colors duration-150 enabled:hover:border-primary focus:border-primary ' +
   'focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-primary ' +
   'disabled:cursor-not-allowed disabled:opacity-45'
+
+// One line tall for an input or a select; a textarea starts at several and grows by hand.
+const SINGLE_LINE = 'min-h-12'
+const MULTI_LINE = 'min-h-40 resize-y py-3'
 
 function FieldLabel({
   label,
@@ -34,23 +39,31 @@ function FieldLabel({
   )
 }
 
-/** A visible label wrapping a native `<input>` or `<select>`, which it names. */
+/** A visible label wrapping a native `<input>`, `<select>` or `<textarea>`, which it names. */
 export function Field(props: FieldProps) {
   if (props.as === 'select') {
     const { label, as: _as, className, ...select } = props
     return (
       <FieldLabel label={label} className={className}>
         <span className="relative block">
-          <select className={`${CONTROL} cursor-pointer appearance-none pr-11`} {...select} />
+          <select className={`${CONTROL} ${SINGLE_LINE} cursor-pointer appearance-none pr-11`} {...select} />
           <ChevronDownIcon className="pointer-events-none absolute top-1/2 right-4 size-5 -translate-y-1/2 text-primary" />
         </span>
+      </FieldLabel>
+    )
+  }
+  if (props.as === 'textarea') {
+    const { label, as: _as, className, ...textarea } = props
+    return (
+      <FieldLabel label={label} className={className}>
+        <textarea className={`${CONTROL} ${MULTI_LINE}`} {...textarea} />
       </FieldLabel>
     )
   }
   const { label, as: _as, className, ...input } = props
   return (
     <FieldLabel label={label} className={className}>
-      <input className={CONTROL} {...input} />
+      <input className={`${CONTROL} ${SINGLE_LINE}`} {...input} />
     </FieldLabel>
   )
 }
