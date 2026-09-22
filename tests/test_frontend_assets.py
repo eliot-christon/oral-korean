@@ -78,6 +78,17 @@ REQUIRED_NUMBERS_PATHS = (
     f"/api/exercises/numbers/questions/{PARAM_MARKER}/answer",
 )
 
+# vocab-words-ui T02: the word list (and, T03, adding one word), one word with its history
+# (and, T03, editing and deleting it: same path, other methods, which a literal cannot tell
+# apart), and the tags for the filter. T03: a pasted list, and the familiarity catalogue.
+REQUIRED_VOCAB_PATHS = (
+    "/api/vocab/words",
+    f"/api/vocab/words/{PARAM_MARKER}",
+    "/api/vocab/tags",
+    "/api/vocab/words/batch",
+    "/api/vocab/familiarity",
+)
+
 
 def _normalise_template_params(path: str) -> str:
     """Replace every `${...}` interpolation with the same marker FastAPI's own
@@ -111,6 +122,16 @@ def test_the_required_numbers_paths_are_referenced_somewhere_in_the_frontend() -
     frontend_literals = frontend_api_literals()
 
     missing = [path for path in REQUIRED_NUMBERS_PATHS if path not in frontend_literals]
+
+    assert not missing, f"frontend/src/ does not yet reference: {missing}"
+
+
+def test_the_required_vocab_paths_are_referenced_somewhere_in_the_frontend() -> None:
+    """`frontend/src/` must actually call the vocabulary routes its pages use: the word
+    list, one word, the tags, a pasted list and the familiarity catalogue."""
+    frontend_literals = frontend_api_literals()
+
+    missing = [path for path in REQUIRED_VOCAB_PATHS if path not in frontend_literals]
 
     assert not missing, f"frontend/src/ does not yet reference: {missing}"
 
