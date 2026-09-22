@@ -16,8 +16,8 @@
  * `epic.md`). It only keeps the preview page from silently losing a control as the
  * primitives change underneath it.
  *
- * Same conventions as `App.test.tsx`: `cleanup()` is called explicitly in `afterEach`
- * (Testing Library's auto-cleanup never registers without `test.globals`), no
+ * Same conventions as `pages/NumbersPage.test.tsx`: `cleanup()` is called explicitly in
+ * `afterEach` (Testing Library's auto-cleanup never registers without `test.globals`), no
  * `@testing-library/jest-dom` matcher is used (every assertion reads a plain DOM
  * property).
  *
