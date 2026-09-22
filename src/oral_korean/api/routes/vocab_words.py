@@ -21,7 +21,7 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from oral_korean.exercises.vocab_words import (
     EntryProblem,
@@ -71,25 +71,9 @@ class EditWordRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
-class WordStatisticsResponse(BaseModel):
-    """Everything FSRS knows about a word at the clock's instant; see `srs.WordStatistics`."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    score: int | None
-    recall: int | None
-    phase: Phase
-    stability: float | None
-    difficulty: float | None
-    next_review: datetime | None
-    last_review: datetime | None
-    due: bool
-    review_count: int
-    lapse_count: int
-
-
 class WordResponse(BaseModel):
-    """A stored word and its statistics."""
+    """A stored word and its statistics, read at the clock's instant. `statistics` is the
+    `srs.WordStatistics` value itself: pydantic serialises the frozen dataclass as is."""
 
     id: int
     korean: str
@@ -97,7 +81,7 @@ class WordResponse(BaseModel):
     tags: list[str]
     familiarity: Familiarity
     added_at: datetime
-    statistics: WordStatisticsResponse
+    statistics: WordStatistics
 
 
 class HistoryEntry(BaseModel):
@@ -204,10 +188,6 @@ def _add(
     return _word_store(request).add_words(entries, at)
 
 
-def _statistics_response(word: VocabularyWord, at: datetime) -> WordStatisticsResponse:
-    return WordStatisticsResponse.model_validate(statistics(word.memory, at))
-
-
 def _word_response(word: VocabularyWord, at: datetime) -> WordResponse:
     return WordResponse(
         id=word.id,
@@ -216,7 +196,7 @@ def _word_response(word: VocabularyWord, at: datetime) -> WordResponse:
         tags=list(word.tags),
         familiarity=word.familiarity,
         added_at=word.added_at,
-        statistics=_statistics_response(word, at),
+        statistics=statistics(word.memory, at),
     )
 
 
