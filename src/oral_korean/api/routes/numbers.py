@@ -8,13 +8,12 @@ question store and the audio cache both live on `request.app.state`, set up by
 
 from __future__ import annotations
 
-import logging
-import secrets
-
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from oral_korean.api.audio import synthesise_or_502
+from oral_korean.api.pending import get_pending_or_404, store_pending
 from oral_korean.exercises.numbers import (
     InvalidRangeError,
     NumberQuestion,
@@ -23,14 +22,11 @@ from oral_korean.exercises.numbers import (
     judge_answer,
 )
 from oral_korean.korean.numerals import DEFAULT_NUMERAL_SYSTEM, NumeralSystem, supported_range
-from oral_korean.tts.base import SpeechSynthesisError
 from oral_korean.tts.cache import AudioCache
 
 router = APIRouter(prefix="/exercises/numbers")
-logger = logging.getLogger(__name__)
 
 _AUDIO_ROUTE_NAME = "numbers_question_audio"
-_SYNTHESIS_FAILURE_DETAIL = "Could not synthesise audio for this question."
 
 
 class NumeralSystemInfo(BaseModel):
@@ -90,29 +86,6 @@ def _audio_cache(request: Request) -> AudioCache:
     return cache
 
 
-def _get_question_or_404(request: Request, question_id: str) -> NumberQuestion:
-    """Look up `question_id`, or raise the 404 every unknown-id route shares."""
-    question = _question_store(request).get(question_id)
-    if question is None:
-        raise HTTPException(status_code=404, detail=f"No question with id {question_id!r}.")
-    return question
-
-
-def _synthesise_or_502(request: Request, question: NumberQuestion) -> str:
-    """Return the cached WAV path for `question`, or raise a 502 that names no Korean text.
-
-    `SpeechSynthesisError` messages are built from the text they failed to speak (see
-    `tts/cache.py`), so relaying one to the client would hand over the very answer this
-    exercise exists to test. The real message is logged server-side instead.
-    """
-    try:
-        audio_path = _audio_cache(request).get_or_synthesise(question.text)
-    except SpeechSynthesisError as exc:
-        logger.error("Speech synthesis failed: %s", exc)
-        raise HTTPException(status_code=502, detail=_SYNTHESIS_FAILURE_DETAIL) from exc
-    return str(audio_path)
-
-
 @router.get("/systems", response_model=SystemsResponse)
 def list_systems() -> SystemsResponse:
     """Report every numeral system and the range it supports."""
@@ -136,10 +109,9 @@ def create_question(body: CreateQuestionRequest, request: Request) -> CreateQues
     except InvalidRangeError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    _synthesise_or_502(request, question)
+    synthesise_or_502(_audio_cache(request), question.text)
 
-    question_id = secrets.token_urlsafe(16)
-    _question_store(request)[question_id] = question
+    question_id = store_pending(_question_store(request), question)
     audio_url = str(request.app.url_path_for(_AUDIO_ROUTE_NAME, question_id=question_id))
     return CreateQuestionResponse(
         question_id=question_id, audio_url=audio_url, system=question.system
@@ -149,15 +121,15 @@ def create_question(body: CreateQuestionRequest, request: Request) -> CreateQues
 @router.get("/questions/{question_id}/audio", name=_AUDIO_ROUTE_NAME)
 def get_question_audio(question_id: str, request: Request) -> FileResponse:
     """Serve the WAV for `question_id`, synthesising it first on a cache miss."""
-    question = _get_question_or_404(request, question_id)
-    audio_path = _synthesise_or_502(request, question)
+    question = get_pending_or_404(_question_store(request), question_id)
+    audio_path = synthesise_or_502(_audio_cache(request), question.text)
     return FileResponse(audio_path, media_type="audio/wav")
 
 
 @router.post("/questions/{question_id}/answer", response_model=AnswerResponse)
 def submit_answer(question_id: str, body: AnswerRequest, request: Request) -> AnswerResponse:
     """Judge `body.answer` against the pending question, without consuming it."""
-    question = _get_question_or_404(request, question_id)
+    question = get_pending_or_404(_question_store(request), question_id)
     judgement = judge_answer(question, body.answer)
     return AnswerResponse(
         verdict=judgement.verdict,
