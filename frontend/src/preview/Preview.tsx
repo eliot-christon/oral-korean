@@ -1,10 +1,13 @@
 import { useState, type ReactNode } from 'react'
 
+import { Badge } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Feedback } from '../components/Feedback'
 import { Field } from '../components/Field'
-import { ReplayIcon } from '../components/icons'
+import { BookIcon, KeypadIcon, ReplayIcon } from '../components/icons'
+import { NavBar } from '../components/NavBar'
+import { TextLink } from '../components/TextLink'
 
 /**
  * Dev-only design preview, served by `npm run dev` at /preview.html and left out of
@@ -148,6 +151,44 @@ export function Preview() {
             <option value="native">Native Korean</option>
           </Field>
           <Field label="Answer, disabled" type="text" disabled defaultValue="42" />
+          <Field
+            label="Words, one per line"
+            as="textarea"
+            lang="ko"
+            className="sm:col-span-2"
+            defaultValue={'사과 ; apple\n집 ; house; home'}
+          />
+        </div>
+      </Section>
+
+      <Section title="Navigation">
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted">
+            The app shell pins this bar to the bottom of a phone screen, and to the top from
+            sm: up. The current page has the filled pill.
+          </p>
+          <NavBar
+            className="rounded-field border border-line/30"
+            items={[
+              { href: '#numbers', label: 'Numbers', icon: <KeypadIcon />, current: true },
+              { href: '#words', label: 'Words', icon: <BookIcon />, current: false },
+            ]}
+          />
+        </div>
+      </Section>
+
+      <Section title="Badges and links">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="tag">food</Badge>
+            <Badge tone="tag">topik 1</Badge>
+            <Badge tone="score">42%</Badge>
+            <Badge tone="highlight">New</Badge>
+            <Badge tone="highlight">due now</Badge>
+          </div>
+          <TextLink href="#words" className="self-start">
+            Back to the words
+          </TextLink>
         </div>
       </Section>
 

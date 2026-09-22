@@ -26,11 +26,14 @@
  *
  *   function ReplayIcon(): JSX.Element   // frontend/src/components/icons.tsx, inline <svg aria-hidden="true">
  *
- * Same conventions as `App.test.tsx`: `cleanup()` is called explicitly in `afterEach`
- * (Testing Library's auto-cleanup never registers here because `vite.config.ts` does not
- * set `test.globals`), no `@testing-library/jest-dom` matcher is used (every assertion
- * reads a plain DOM property), and nothing touches the network - these primitives have no
- * reason to call `fetch` at all.
+ * `NavBar` joined them with the app shell (vocab-words-ui T01), and `Badge` and `TextLink`
+ * with the word pages (T02), tested below the same way.
+ *
+ * Same conventions as `pages/NumbersPage.test.tsx`: `cleanup()` is called explicitly in
+ * `afterEach` (Testing Library's auto-cleanup never registers here because
+ * `vite.config.ts` does not set `test.globals`), no `@testing-library/jest-dom` matcher is
+ * used (every assertion reads a plain DOM property), and nothing touches the network -
+ * these primitives have no reason to call `fetch` at all.
  *
  * Judgment calls this file makes, because the ticket's test contract names one behaviour
  * per case rather than markup, and two things beyond the contract's own list:
@@ -55,11 +58,14 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { classTokensIn } from '../testUtils'
+import { Badge, type BadgeTone } from './Badge'
 import { Button } from './Button'
 import { Card } from './Card'
 import { Feedback, type FeedbackTone } from './Feedback'
 import { Field } from './Field'
-import { ReplayIcon } from './icons'
+import { KeypadIcon, ReplayIcon } from './icons'
+import { NavBar, type NavItem } from './NavBar'
+import { TextLink } from './TextLink'
 
 afterEach(() => {
   cleanup()
@@ -173,6 +179,15 @@ describe('Field', () => {
     expect(input.getAttribute('inputmode')).toBe('numeric')
   })
 
+  it('labels a textarea and passes its attributes through', () => {
+    render(<Field label="Words, one per line" as="textarea" lang="ko" rows={6} />)
+
+    const textarea = screen.getByRole('textbox', { name: 'Words, one per line' })
+    expect(textarea.tagName).toBe('TEXTAREA')
+    expect(textarea.getAttribute('lang')).toBe('ko')
+    expect(textarea.getAttribute('rows')).toBe('6')
+  })
+
   it('forwards onChange to the caller with the typed value', () => {
     const handleChange = vi.fn()
     render(<Field label="Answer" type="text" onChange={handleChange} />)
@@ -245,6 +260,66 @@ describe('Feedback', () => {
   })
 })
 
+describe('NavBar', () => {
+  const ITEMS: NavItem[] = [
+    { href: '#/numbers', label: 'Numbers', icon: <KeypadIcon />, current: true },
+    { href: '#/words', label: 'Words', icon: <KeypadIcon />, current: false },
+  ]
+
+  it('is a navigation landmark with one native link per item, named by its label', () => {
+    render(<NavBar items={ITEMS} />)
+
+    const navigation = screen.getByRole('navigation')
+    const links = within(navigation).getAllByRole('link')
+    expect(links.map((link) => link.textContent)).toEqual(['Numbers', 'Words'])
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['#/numbers', '#/words'])
+    links.forEach((link) => expect(link.tagName).toBe('A'))
+  })
+
+  it('marks the current item, and only that one, with aria-current="page"', () => {
+    render(<NavBar items={ITEMS} />)
+
+    expect(screen.getByRole('link', { name: 'Numbers' }).getAttribute('aria-current')).toBe('page')
+    expect(screen.getByRole('link', { name: 'Words' }).getAttribute('aria-current')).toBeNull()
+  })
+
+  it('keeps its icons decorative, so each link is named by its label alone', () => {
+    const { container } = render(<NavBar items={ITEMS} />)
+
+    const icons = container.querySelectorAll('svg')
+    expect(icons.length).toBe(ITEMS.length)
+    icons.forEach((icon) => expect(icon.getAttribute('aria-hidden')).toBe('true'))
+  })
+})
+
+describe('Badge', () => {
+  const TONES: BadgeTone[] = ['tag', 'score', 'highlight']
+
+  it.each(TONES)('renders exactly its words for the %s tone, and names the tone for tests', (tone) => {
+    const { container } = render(<Badge tone={tone}>due now</Badge>)
+
+    const badge = container.firstElementChild as HTMLElement
+    expect(badge.tagName).toBe('SPAN')
+    expect(badge.textContent).toBe('due now')
+    expect(badge.dataset.tone).toBe(tone)
+  })
+})
+
+describe('TextLink', () => {
+  it('is a native link named by its content, passing its props through', () => {
+    render(
+      <TextLink href="#/words" aria-describedby="hint">
+        Back to the words
+      </TextLink>,
+    )
+
+    const link = screen.getByRole('link', { name: 'Back to the words' })
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')).toBe('#/words')
+    expect(link.getAttribute('aria-describedby')).toBe('hint')
+  })
+})
+
 describe('Across all primitives', () => {
   it('applies every animation only through the motion-safe: variant', () => {
     const { container } = render(
@@ -263,12 +338,16 @@ describe('Across all primitives', () => {
           <option value="sino">Sino-Korean</option>
           <option value="native">Native Korean</option>
         </Field>
+        <Field label="Words, one per line" as="textarea" />
         <Feedback tone="success">Correct!</Feedback>
         <Feedback tone="error">Incorrect. The answer was 42 (마흔둘).</Feedback>
         <Feedback tone="warning">That is not a number. Type the digits you heard.</Feedback>
         <Feedback tone="neutral" role="alert">
           Could not reach the backend. Is it running?
         </Feedback>
+        <NavBar items={[{ href: '#/numbers', label: 'Numbers', icon: <KeypadIcon />, current: true }]} />
+        <Badge tone="score">42%</Badge>
+        <TextLink href="#/words">Back to the words</TextLink>
       </>,
     )
 
