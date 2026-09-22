@@ -20,6 +20,22 @@ from oral_korean.api.app import create_app
 from oral_korean.config import AppConfig
 
 
+@pytest.fixture(autouse=True)
+def _isolate_the_default_database_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point `AppConfig`'s default database path at a per-test file (vocab-core T04).
+
+    Autouse and unconditional, so no test - present or future, whether or not it ever
+    builds a `WordStore` - can reach the real `<repo>/.data/oral-korean.sqlite3` merely by
+    constructing a default `AppConfig()`. `monkeypatch.setenv` rather than a fixture
+    parameter: `AppConfig`'s own default has to read this from the environment, the same
+    way `ORAL_KOREAN_HOST` already works, so patching the environment is the only seam
+    that reaches it without every call site threading a path through.
+    """
+    monkeypatch.setenv("ORAL_KOREAN_DATABASE_PATH", str(tmp_path / "oral-korean.sqlite3"))
+
+
 @dataclass
 class NumbersHarness:
     """A `create_app` instance wired to a `FakeSpeechEngine`, ready for the numbers routes.
@@ -216,18 +232,29 @@ class FakeSpeechEngine:
 FORBIDDEN_IMPORTS: tuple[str, ...] = (
     "oral_korean.tts",
     "oral_korean.api",
+    "oral_korean.storage",
     "fastapi",
     "httpx",
     "melo",
     "requests",
+    "sqlite3",
 )
 """What a pure module may never reach for, directly or transitively by name.
 
 One list rather than one per package: a name added to a copy and not to the others would
 leave that layer silently unguarded, which is the opposite of what `test_layering.py` is
-for. `korean/` and `exercises/` decide what to say and whether an answer is right, and
-nothing there may talk to the outside world. `korean/` is stricter still and adds
-`oral_korean.exercises` to this list in that file.
+for. `korean/`, `srs/` and `exercises/` decide what to say, how well a word is known and
+whether an answer is right, and nothing there may talk to the outside world: not the
+network, not HTTP, and not a database. `sqlite3` and `oral_korean.storage` belong to the
+storage layer alone (vocab-core T04); a pure module that reached for either could no
+longer be tested without a file on disk. Each package adds its own stricter entries in
+that file: `korean/` and `srs/` forbid the rest of the project, and `exercises/` forbids
+everything but `korean/` and `srs/` (opened by vocab-core T03, the ticket that gave a word
+its familiarity level and memory state, both `srs/` values). `storage/` itself is allowed
+`sqlite3` (it is the one place SQL lives) but forbidden everything else here, including
+`oral_korean.storage`'s own siblings `api/` and `tts/`: see `STORAGE_PACKAGE` in
+`test_layering.py`, which starts from this list and removes `sqlite3` and
+`oral_korean.storage` itself before adding the rest of the project back in.
 """
 
 
