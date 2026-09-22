@@ -33,6 +33,19 @@ def _default_audio_cache_dir() -> Path:
     return _PROJECT_ROOT / ".cache" / "audio"
 
 
+def _default_database_path() -> Path:
+    """Return where the vocabulary lives, `.data/` unless the environment says otherwise.
+
+    `.data/`, not `.cache/`: a cache is something the user may delete to reclaim space, and
+    this file is their vocabulary. The environment variable is how the test suite keeps
+    every test away from the real file, and the hook a later deployment needs.
+    """
+    configured = os.environ.get("ORAL_KOREAN_DATABASE_PATH")
+    if configured:
+        return Path(configured)
+    return _PROJECT_ROOT / ".data" / "oral-korean.sqlite3"
+
+
 @dataclass(frozen=True)
 class AppConfig:
     """Runtime configuration for the FastAPI app and its dev server."""
@@ -41,5 +54,6 @@ class AppConfig:
     port: int = field(default_factory=_default_port)
     frontend_dist: Path = field(default_factory=_default_frontend_dist)
     audio_cache_dir: Path = field(default_factory=_default_audio_cache_dir)
+    database_path: Path = field(default_factory=_default_database_path)
     tts_voice: str = "KR"
     tts_speed: float = 1.0
