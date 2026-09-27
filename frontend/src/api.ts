@@ -1,7 +1,8 @@
 /**
  * Typed wrappers around the backend's HTTP API: the numbers exercise
- * (`src/oral_korean/api/routes/numbers.py`) and the vocabulary
- * (`src/oral_korean/api/routes/vocab_words.py`).
+ * (`src/oral_korean/api/routes/numbers.py`), the vocabulary
+ * (`src/oral_korean/api/routes/vocab_words.py`) and its learn and review sessions
+ * (`src/oral_korean/api/routes/vocab_sessions.py`).
  *
  * Unions are string unions rather than TypeScript `enum`s: `tsconfig.app.json` sets
  * `erasableSyntaxOnly`, which rejects real `enum` declarations because they are not erasable.
@@ -130,6 +131,15 @@ export type Grade = 'again' | 'hard' | 'good' | 'easy'
 
 export type Phase = 'new' | 'review'
 
+/** Which side of a word is shown or spoken, and which side answers it. */
+export type Direction =
+  | 'hangul_to_translation'
+  | 'translation_to_hangul'
+  | 'voice_to_hangul'
+  | 'voice_to_translation'
+
+export type AnswerMode = 'choice' | 'typing'
+
 /**
  * Everything known about a word at the instant it was read. Every figure but the phase,
  * `due` and the counts is null for a new word. `score` and `recall` are whole percents;
@@ -158,7 +168,10 @@ export interface Word {
   statistics: WordStatistics
 }
 
-/** A seed or an answer, and the memory that followed it. `recall_before` is null for a seed. */
+/**
+ * A seed or an answer, and the memory that followed it. `recall_before` is null for a seed,
+ * and so are `direction`, `mode` and `correct`, which say how an answer was asked.
+ */
 export interface HistoryEntry {
   reviewed_at: string
   grade: Grade
@@ -167,6 +180,9 @@ export interface HistoryEntry {
   stability: number
   difficulty: number
   next_review: string
+  direction: Direction | null
+  mode: AnswerMode | null
+  correct: boolean | null
 }
 
 /** A word with its history, oldest first. */
@@ -316,4 +332,112 @@ export async function deleteWord(id: number): Promise<void> {
 export async function fetchFamiliarity(): Promise<FamiliarityResponse> {
   const response = await fetch('/api/vocab/familiarity')
   return parseJsonOrThrow<FamiliarityResponse>(response, 'Could not load the familiarity levels.')
+}
+
+// Learn and review sessions. The backend decides everything: which words, which direction and
+// mode, what counts as right, what is scored. A question never carries its answer.
+
+export type SessionKind = 'learn' | 'review'
+
+export interface StartSessionParams {
+  kind: SessionKind
+  /** Omitted for every tag. */
+  tag?: string
+  directions: Direction[]
+  /** Omitted for the backend's default. */
+  size?: number
+}
+
+export interface StartSessionResponse {
+  session_id: string
+  kind: SessionKind
+  word_count: number
+  directions: Direction[]
+}
+
+/** Words whose scored question has been answered, out of the session's words. */
+export interface SessionProgress {
+  done: number
+  total: number
+}
+
+/** A new word shown openly before it is asked. */
+export interface Presentation {
+  type: 'presentation'
+  item_id: string
+  korean: string
+  translations: string[]
+  audio_url: string
+  progress: SessionProgress
+}
+
+/**
+ * A question: `prompt` is null for a voice direction, `audio_url` for a written one, and
+ * `options` for typing. `scored` is false for a practice question.
+ */
+export interface Question {
+  type: 'question'
+  item_id: string
+  direction: Direction
+  mode: AnswerMode
+  prompt: string | null
+  audio_url: string | null
+  options: string[] | null
+  scored: boolean
+  progress: SessionProgress
+}
+
+export interface SummaryWord {
+  korean: string
+  translations: string[]
+  correct: boolean
+}
+
+export interface SessionEnd {
+  type: 'end'
+  summary: {
+    words: SummaryWord[]
+    word_count: number
+    correct_count: number
+  }
+}
+
+export type SessionItem = Presentation | Question | SessionEnd
+
+/** Exactly one of: typed text, a tapped option's index, or "I don't know". */
+export type SessionAnswer = { answer: string } | { choice: number } | { dont_know: true }
+
+/**
+ * The verdict, and the word whichever way it went. The statistics are null when the word
+ * was deleted meanwhile; for a practice answer, before and after are the same.
+ */
+export interface SessionVerdict {
+  correct: boolean
+  korean: string
+  translations: string[]
+  correct_option: string | null
+  scored: boolean
+  statistics_before: WordStatistics | null
+  statistics_after: WordStatistics | null
+}
+
+/** Starts a session; nothing to learn or review is a `409` `ApiError` saying so. */
+export async function startSession(params: StartSessionParams): Promise<StartSessionResponse> {
+  const response = await sendJson('/api/vocab/sessions', 'POST', params)
+  return parseJsonOrThrow<StartSessionResponse>(response, 'Could not start the session.')
+}
+
+/**
+ * The next item: a presentation, the pending question again, a new one, or the end. A
+ * failed synthesis is a `502`, an ended session a `404`, both `ApiError`s.
+ */
+export async function fetchNextItem(sessionId: string): Promise<SessionItem> {
+  const response = await fetch(`/api/vocab/sessions/${sessionId}/next`, { method: 'POST' })
+  return parseJsonOrThrow<SessionItem>(response, 'Could not load the next question.')
+}
+
+/** Answers a question, once: a second answer is a `404` `ApiError`. */
+export async function answerItem(itemId: string, answer: SessionAnswer): Promise<SessionVerdict> {
+  const response = await sendJson(`/api/vocab/items/${itemId}/answer`, 'POST', answer)
+  return parseJsonOrThrow<SessionVerdict>(response, 'Could not submit the answer.')
 }

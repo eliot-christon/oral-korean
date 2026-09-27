@@ -45,6 +45,9 @@ const REVIEWED_WORD = wordStub({
       stability: 2.3065,
       difficulty: 2.1181,
       next_review: '2026-09-24T10:00:00Z',
+      direction: null,
+      mode: null,
+      correct: null,
     },
     {
       reviewed_at: '2026-09-24T10:00:00Z',
@@ -54,6 +57,9 @@ const REVIEWED_WORD = wordStub({
       stability: 0.8,
       difficulty: 6.9,
       next_review: '2026-09-25T10:00:00Z',
+      direction: 'voice_to_hangul',
+      mode: 'choice',
+      correct: false,
     },
     {
       reviewed_at: '2026-09-25T10:00:00Z',
@@ -63,6 +69,9 @@ const REVIEWED_WORD = wordStub({
       stability: 3.4051,
       difficulty: 6.2,
       next_review: '2026-09-28T10:00:00Z',
+      direction: 'translation_to_hangul',
+      mode: 'typing',
+      correct: true,
     },
   ],
 })
@@ -153,6 +162,18 @@ test('the history lists the seed and both answers, oldest first, the seed labell
   // Only the seed is a seed.
   expect(rows[1].textContent).not.toContain('Added as')
   expect(rows[2].textContent).not.toContain('Added as')
+})
+
+test('an answered row says how it was asked and how it went; the seed says neither', async () => {
+  stubFetch(200, REVIEWED_WORD)
+
+  render(<WordDetailPage id={7} />)
+  await screen.findByRole('heading', { name: '사과' })
+
+  const [seedRow, missed, typed] = historyRows()
+  expect(missed.textContent).toContain('Answered wrong, multiple choice: Voice to Hangul')
+  expect(typed.textContent).toContain('Answered right, typed: Translation to Hangul')
+  expect(seedRow.textContent).not.toMatch(/multiple choice|typed|Hangul to|to Hangul/)
 })
 
 test('a seed has no predicted recall before it, shown as a dash rather than 0%', async () => {
