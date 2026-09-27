@@ -1,4 +1,4 @@
-import type { KeyboardEvent } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent } from 'react'
 
 /**
  * Attributes for a field the user types Hangul into, phone keyboards included: marked as
@@ -21,13 +21,15 @@ const IME_PROCESSING_KEY_CODE = 229
 /**
  * Whether this key press should submit: a fresh Enter, and never one that an input method
  * is still using. With a Korean keyboard the last syllable is still being composed when
- * Enter is pressed; submitting then would send it half-built (사ㄱ for 사과).
+ * Enter is pressed; submitting then would send it half-built (사ㄱ for 사과). Takes a React
+ * event from a field, or a native one from a page-wide listener.
  */
-export function isSubmitEnter(event: KeyboardEvent): boolean {
+export function isSubmitEnter(event: ReactKeyboardEvent | KeyboardEvent): boolean {
+  const native = 'nativeEvent' in event ? event.nativeEvent : event
   return (
     event.key === 'Enter' &&
     !event.repeat &&
-    !event.nativeEvent.isComposing &&
-    event.nativeEvent.keyCode !== IME_PROCESSING_KEY_CODE
+    !native.isComposing &&
+    native.keyCode !== IME_PROCESSING_KEY_CODE
   )
 }
