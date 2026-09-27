@@ -87,6 +87,11 @@ REQUIRED_VOCAB_PATHS = (
     "/api/vocab/tags",
     "/api/vocab/words/batch",
     "/api/vocab/familiarity",
+    # vocab-sessions T04: starting a session, its next item, and answering one. The item
+    # audio arrives ready-made in the responses, like the numbers exercise's.
+    "/api/vocab/sessions",
+    f"/api/vocab/sessions/{PARAM_MARKER}/next",
+    f"/api/vocab/items/{PARAM_MARKER}/answer",
 )
 
 
@@ -128,7 +133,8 @@ def test_the_required_numbers_paths_are_referenced_somewhere_in_the_frontend() -
 
 def test_the_required_vocab_paths_are_referenced_somewhere_in_the_frontend() -> None:
     """`frontend/src/` must actually call the vocabulary routes its pages use: the word
-    list, one word, the tags, a pasted list and the familiarity catalogue."""
+    list, one word, the tags, a pasted list, the familiarity catalogue, and a session's start,
+    next item and answer."""
     frontend_literals = frontend_api_literals()
 
     missing = [path for path in REQUIRED_VOCAB_PATHS if path not in frontend_literals]

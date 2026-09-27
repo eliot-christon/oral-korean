@@ -1,5 +1,5 @@
 /**
- * Tests for the app shell (vocab-words-ui T01 to T03): the page the URL fragment names, the
+ * Tests for the app shell (vocab-words-ui T01 to T03, vocab-sessions T04): the page the URL fragment names, the
  * navigation, and the not-found page. What each page does is its own test file's business
  * (`pages/*.test.tsx`); here a page is only recognised by its heading.
  *
@@ -168,13 +168,13 @@ function navigateTo(hash: string): void {
   })
 }
 
-test('the navigation lists the numbers exercise and the word list, in that order', () => {
+test('the navigation lists the numbers exercise, the word list, learn and review, in that order', () => {
   startAt('')
   render(<App />)
 
   const links = within(screen.getByRole('navigation')).getAllByRole('link')
-  expect(links.map((link) => link.textContent)).toEqual(['Numbers', 'Words'])
-  expect(links.map((link) => link.getAttribute('href'))).toEqual(['#/numbers', '#/words'])
+  expect(links.map((link) => link.textContent)).toEqual(['Numbers', 'Words', 'Learn', 'Review'])
+  expect(links.map((link) => link.getAttribute('href'))).toEqual(['#/numbers', '#/words', '#/learn', '#/review'])
 })
 
 test.each(['#/words', '#/words/12'])('marks Words as the current page at %j', async (hash) => {
@@ -209,6 +209,19 @@ test('a new page starts at the top, but the first one is left where the browser 
 
   expect(scrollSpy).toHaveBeenCalledWith(0, 0)
   await screen.findByRole('heading', { name: '사과' })
+})
+
+test.each([
+  ['#/learn', 'Learn', 'Learn new words'],
+  ['#/review', 'Review', 'Review due words'],
+])('%s renders the session page, under the %s entry', async (hash, entry, heading) => {
+  startAt(hash)
+  render(<App />)
+
+  expect(await screen.findByRole('heading', { name: heading })).toBeDefined()
+  expect(screen.getByRole('link', { name: entry }).getAttribute('aria-current')).toBe('page')
+  // Let the start form's own requests settle inside the test.
+  await waitFor(() => expect(screen.getByText(/0 (new words|words due)/)).toBeDefined())
 })
 
 test('#/words/new renders the add page, under the Words entry', async () => {
