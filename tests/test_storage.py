@@ -28,7 +28,13 @@ the implementation must satisfy. Two modules, `oral_korean.storage.database` and
     touched.
   - `delete_word(word_id) -> bool`
   - `tag_counts() -> tuple[TagCount, ...]`, sorted by tag.
-  - `history(word_id) -> tuple[ReviewRecord, ...]`, chronological, `()` for an unknown id.
+  - `history(word_id) -> tuple[HistoryRow, ...]`, chronological, `()` for an unknown id
+    (a `tuple[ReviewRecord, ...]` until `vocab-sessions` T03, see below).
+
+`vocab-sessions` T03 adds migration 2, `AnswerContext`, `HistoryRow` and three `WordStore`
+methods (`record_answer`, `new_words`, `due_words`): their signatures are pinned in the table
+below, their behaviour in `test_storage_reviews.py`, split off to keep this file under
+pylint's module-length limit.
 
 Decisions taken here that the ticket leaves open, flagged in the hand-back report:
 
@@ -83,7 +89,11 @@ from oral_korean.srs.memory import (
     seed,
 )
 from oral_korean.storage.database import MIGRATIONS, Database, SchemaVersionError
-from oral_korean.storage.words import DuplicateWordError, TagCount, WordStore
+from oral_korean.storage.words import (
+    DuplicateWordError,
+    TagCount,
+    WordStore,
+)
 
 T0 = datetime(2026, 9, 22, 9, 0, 0, tzinfo=UTC)
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -194,6 +204,18 @@ def test_the_project_root_is_computed_exactly_once_in_config() -> None:
         ),
         pytest.param(WordStore.tag_counts, ["self"], [], id="WordStore.tag_counts"),
         pytest.param(WordStore.history, ["self", "word_id"], [], id="WordStore.history"),
+        pytest.param(
+            WordStore.record_answer,
+            ["self", "word_id", "state", "record", "answer"],
+            [],
+            id="WordStore.record_answer",
+        ),
+        pytest.param(
+            WordStore.new_words, ["self"], ["tag", "limit"], id="WordStore.new_words"
+        ),
+        pytest.param(
+            WordStore.due_words, ["self", "at"], ["tag", "limit"], id="WordStore.due_words"
+        ),
     ],
 )
 def test_public_signatures_keep_their_agreed_shape(
@@ -375,8 +397,9 @@ def test_adding_a_word_seeded_well_reads_back_the_seeded_memory_exactly(
 
     assert added.memory == state
     history = store.history(added.id)
-    assert history == (record,)
-    assert history[0].is_seed is True
+    assert [row.record for row in history] == [record]
+    assert history[0].record.is_seed is True
+    assert history[0].answer is None
 
 
 def test_a_stored_memory_state_can_be_graded_again_without_error(tmp_path: Path) -> None:
@@ -484,7 +507,7 @@ def test_stored_datetimes_read_back_aware_with_the_utc_object(tmp_path: Path) ->
     assert added.memory is not None
     assert added.memory.next_review.tzinfo is UTC
     assert added.memory.last_review.tzinfo is UTC
-    history_record = store.history(added.id)[0]
+    history_record = store.history(added.id)[0].record
     assert history_record.reviewed_at.tzinfo is UTC
     assert history_record.next_review.tzinfo is UTC
 
@@ -699,8 +722,8 @@ def test_history_is_returned_in_chronological_order(tmp_path: Path) -> None:
 
     history = store.history(added.id)
 
-    assert history == (record,)
-    assert list(history) == sorted(history, key=lambda entry: entry.reviewed_at)
+    assert [row.record for row in history] == [record]
+    assert list(history) == sorted(history, key=lambda entry: entry.record.reviewed_at)
 
 
 def test_unicode_round_trips_exactly_through_storage(tmp_path: Path) -> None:

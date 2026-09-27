@@ -23,6 +23,7 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
+from oral_korean.exercises.vocab import AnswerMode, Direction
 from oral_korean.exercises.vocab_words import (
     EntryProblem,
     VocabularyWord,
@@ -35,13 +36,12 @@ from oral_korean.srs.memory import (
     Familiarity,
     Grade,
     Phase,
-    ReviewRecord,
     WordStatistics,
     score,
     seed,
     statistics,
 )
-from oral_korean.storage.words import DuplicateWordError, WordStore
+from oral_korean.storage.words import DuplicateWordError, HistoryRow, WordStore
 
 router = APIRouter(prefix="/vocab")
 
@@ -86,7 +86,8 @@ class WordResponse(BaseModel):
 
 class HistoryEntry(BaseModel):
     """A seed or an answer, and what followed it. `recall_before` is a whole percent, like
-    a word's `recall`, and null for a seed: the word had no memory before it."""
+    a word's `recall`, and null for a seed: the word had no memory before it. `direction`,
+    `mode` and `correct` say how an answer was asked and how it went; null for a seed."""
 
     reviewed_at: datetime
     grade: Grade
@@ -95,6 +96,9 @@ class HistoryEntry(BaseModel):
     stability: float
     difficulty: float
     next_review: datetime
+    direction: Direction | None
+    mode: AnswerMode | None
+    correct: bool | None
 
 
 class WordDetailResponse(WordResponse):
@@ -200,7 +204,8 @@ def _word_response(word: VocabularyWord, at: datetime) -> WordResponse:
     )
 
 
-def _history_entry(record: ReviewRecord) -> HistoryEntry:
+def _history_entry(row: HistoryRow) -> HistoryEntry:
+    record, answer = row.record, row.answer
     recall_before = None if record.recall_before is None else round(100 * record.recall_before)
     return HistoryEntry(
         reviewed_at=record.reviewed_at,
@@ -210,6 +215,9 @@ def _history_entry(record: ReviewRecord) -> HistoryEntry:
         stability=record.stability,
         difficulty=record.difficulty,
         next_review=record.next_review,
+        direction=None if answer is None else answer.direction,
+        mode=None if answer is None else answer.mode,
+        correct=None if answer is None else answer.correct,
     )
 
 
@@ -263,7 +271,7 @@ def get_word(word_id: int, request: Request) -> WordDetailResponse:
         raise _not_found(word_id)
     return WordDetailResponse(
         **_word_response(word, _now(request)).model_dump(),
-        history=[_history_entry(record) for record in store.history(word_id)],
+        history=[_history_entry(row) for row in store.history(word_id)],
     )
 
 
