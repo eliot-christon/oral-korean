@@ -10,7 +10,8 @@ Every route lives under `/api/vocab`. The paths and the response shapes are a co
 - The **list**: `{"words": [...], "summary": {"total", "new", "due", "average_score"}}`.
 - One word's **detail**: a word plus `history`, each entry `reviewed_at`, `grade`, `is_seed`,
   `recall_before` (a whole percent, null for a seed), `stability`, `difficulty`,
-  `next_review`.
+  `next_review`, and (vocab-sessions T03) the answer's `direction`, `mode` and `correct`,
+  all three null for a seed; the answered rows are pinned in `test_api_vocab_answers.py`.
 - **Adding** takes `korean`, `translations` as typed (`"house; home"`), `tags` and
   `familiarity` (default `new`); a **pasted batch** takes `text`, `tags` and `familiarity`
   and answers `{"words": [...]}`. **Editing** takes `korean`, `translations` and `tags`.
@@ -362,6 +363,9 @@ def test_one_word_comes_with_its_statistics_and_history(client: TestClient) -> N
             "stability": record.stability,
             "difficulty": record.difficulty,
             "next_review": body["history"][0]["next_review"],
+            "direction": None,
+            "mode": None,
+            "correct": None,
         }
     ]
     assert instant(body["history"][0]["reviewed_at"]) == T0

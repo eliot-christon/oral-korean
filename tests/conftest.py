@@ -5,20 +5,23 @@ from __future__ import annotations
 import ast
 import importlib.util
 import inspect
+import json
 import wave
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from httpx import Response
 
 from oral_korean.api.app import create_app
 from oral_korean.config import AppConfig
+from oral_korean.srs.memory import Familiarity, MemoryState, seed
 
 
 @pytest.fixture(autouse=True)
@@ -118,6 +121,23 @@ def build_numbers_harness(
 def numbers_harness(tmp_path: Path) -> NumbersHarness:
     """One isolated app + client + fake engine, freshly built per test."""
     return build_numbers_harness(tmp_path)
+
+
+def leaks(body: object, question_id: str, needle: str) -> bool:
+    """Whether `needle` appears anywhere in `body` once the opaque id is redacted.
+
+    The id is expected to appear in the response (as `question_id` and inside
+    `audio_url`), and an opaque id built from arbitrary hex digits will, essentially
+    always, coincidentally contain any single digit somewhere in its length - that
+    coincidence says nothing about the answer leaking. Redacting the id first is what
+    keeps this check about real disclosure instead of about the shape of a UUID.
+
+    `ensure_ascii=False`, because `json.dumps` otherwise writes every Hangul syllable as a
+    `\\uXXXX` escape, and a Korean needle could then never be found, leak or no leak.
+    Shared by the numbers and the vocabulary sessions suites (vocab-sessions T03).
+    """
+    redacted = json.dumps(body, ensure_ascii=False).replace(question_id, "")
+    return needle in redacted
 
 
 # Content markers used to prove *which* file the app actually served, without
@@ -343,3 +363,229 @@ def signature_shape(function: Callable[..., object]) -> tuple[list[str], list[st
         [name for name, kind in kinds.items() if kind is inspect.Parameter.POSITIONAL_OR_KEYWORD],
         [name for name, kind in kinds.items() if kind is inspect.Parameter.KEYWORD_ONLY],
     )
+
+
+# ---------------------------------------------------------------------------------
+# Vocabulary sessions over HTTP (vocab-sessions T03)
+# ---------------------------------------------------------------------------------
+# Shared by `test_api_vocab_sessions.py` (starting, questions, audio, lifetime) and
+# `test_api_vocab_answers.py` (answering and scoring), split only for pylint's module
+# length. The route shapes these helpers rely on are documented in the first file.
+
+type Json = dict[str, Any]
+"""A JSON object as a route returns it."""
+
+VOCAB: Final = "/api/vocab"
+WORDS: Final = f"{VOCAB}/words"
+SESSIONS: Final = f"{VOCAB}/sessions"
+
+H2T: Final = "hangul_to_translation"
+T2H: Final = "translation_to_hangul"
+V2H: Final = "voice_to_hangul"
+V2T: Final = "voice_to_translation"
+ALL_DIRECTIONS: Final = (H2T, T2H, V2H, V2T)
+VOICE_DIRECTIONS: Final = (V2H, V2T)
+HANGUL_ANSWERED: Final = (T2H, V2H)
+"""The directions answered with the Korean; the other two are answered with a translation."""
+
+KOREAN: Final = "사과"
+TRANSLATIONS: Final = ["apple", "pomme"]
+"""The target word every single-word test asks about, added as `apple; pomme`."""
+
+DISTRACTORS: Final = (("배", "pear"), ("감", "persimmon"), ("포도", "grape"))
+"""Added `very_well`: neither new nor due at T0, so they only ever appear as options."""
+
+DONT_KNOW: Final[Mapping[str, object]] = {"dont_know": True}
+MAX_ITEMS: Final = 50
+
+
+def next_path(session_id: str) -> str:
+    return f"{SESSIONS}/{session_id}/next"
+
+
+def audio_path(item_id: str) -> str:
+    return f"{VOCAB}/items/{item_id}/audio"
+
+
+def answer_path(item_id: str) -> str:
+    return f"{VOCAB}/items/{item_id}/answer"
+
+
+def instant(text: str) -> datetime:
+    """A datetime from the JSON, aware as the API writes it."""
+    return datetime.fromisoformat(text)
+
+
+def add_word(
+    client: TestClient,
+    korean: str,
+    translations: str,
+    *,
+    tags: list[str] | None = None,
+    familiarity: str = "new",
+) -> Json:
+    """Add a word through the word route; it must be accepted."""
+    body = {
+        "korean": korean,
+        "translations": translations,
+        "tags": tags or [],
+        "familiarity": familiarity,
+    }
+    response = client.post(WORDS, json=body)
+    assert response.status_code == 201, response.text
+    word: Json = response.json()
+    return word
+
+
+def add_target(client: TestClient, familiarity: str = "new") -> int:
+    """Add the target word; its id."""
+    word = add_word(client, KOREAN, "; ".join(TRANSLATIONS), familiarity=familiarity)
+    word_id: int = word["id"]
+    return word_id
+
+
+def add_distractors(client: TestClient) -> None:
+    for korean, translation in DISTRACTORS:
+        add_word(client, korean, translation, familiarity="very_well")
+
+
+def seeded_well() -> MemoryState:
+    """What the word routes seed for `well` at T0, fuzzing off: a two-day first delay, which
+    FSRS never fuzzes, so the route's own seed is the same."""
+    result = seed(Familiarity.WELL, HARNESS_START, fuzzing=False)
+    assert result is not None
+    return result[0]
+
+
+def move_to_well_due_date(harness: NumbersHarness) -> None:
+    harness.clock.advance(seeded_well().next_review - HARNESS_START)
+
+
+def start_session(client: TestClient, kind: str, **fields: object) -> Response:
+    response: Response = client.post(SESSIONS, json={"kind": kind, **fields})
+    return response
+
+
+def started(client: TestClient, kind: str, **fields: object) -> str:
+    """Start a session that must be accepted; its id."""
+    response = start_session(client, kind, **fields)
+    assert response.status_code == 201, response.text
+    session_id: str = response.json()["session_id"]
+    return session_id
+
+
+def next_item(client: TestClient, session_id: str) -> Json:
+    response = client.post(next_path(session_id))
+    assert response.status_code == 200, response.text
+    item: Json = response.json()
+    return item
+
+
+def answer(client: TestClient, item_id: str, body: Mapping[str, object]) -> Response:
+    response: Response = client.post(answer_path(item_id), json=dict(body))
+    return response
+
+
+def answered(client: TestClient, item_id: str, body: Mapping[str, object]) -> Json:
+    response = answer(client, item_id, body)
+    assert response.status_code == 200, response.text
+    verdict: Json = response.json()
+    return verdict
+
+
+def word_detail(client: TestClient, word_id: int) -> Json:
+    response = client.get(f"{WORDS}/{word_id}")
+    assert response.status_code == 200, response.text
+    body: Json = response.json()
+    return body
+
+
+def pending_items(harness: NumbersHarness) -> int:
+    """How many items the app holds pending: only the size of the store is read."""
+    return len(harness.app.state.vocab_items)
+
+
+def sessions_held(harness: NumbersHarness) -> int:
+    return len(harness.app.state.vocab_sessions)
+
+
+def option_index(question: Json, text: str) -> int:
+    """The index of the one option containing `text`: an option found by its word."""
+    matches = [index for index, option in enumerate(question["options"]) if text in option]
+    assert len(matches) == 1, question["options"]
+    return matches[0]
+
+
+def correct_option(question: Json) -> str:
+    """The target word's own option: its Korean, or the option naming its translations."""
+    text = KOREAN if question["direction"] in HANGUL_ANSWERED else TRANSLATIONS[0]
+    option: str = question["options"][option_index(question, text)]
+    return option
+
+
+def right_choice(question: Json) -> Mapping[str, object]:
+    return {"choice": question["options"].index(correct_option(question))}
+
+
+def wrong_choice(question: Json) -> Mapping[str, object]:
+    right = question["options"].index(correct_option(question))
+    return {"choice": next(i for i in range(len(question["options"])) if i != right)}
+
+
+def right_typed(direction: str) -> Mapping[str, object]:
+    return {"answer": KOREAN if direction in HANGUL_ANSWERED else TRANSLATIONS[0]}
+
+
+@dataclass(frozen=True)
+class Asked:
+    """A session holding one pending question about the target word."""
+
+    session_id: str
+    word_id: int
+    question: Json
+
+    @property
+    def item_id(self) -> str:
+        item_id: str = self.question["item_id"]
+        return item_id
+
+
+def ask_by_choice(harness: NumbersHarness, direction: str) -> Asked:
+    """A learn session over the new target, past its presentation: asked by choice."""
+    word_id = add_target(harness.client)
+    add_distractors(harness.client)
+    session_id = started(harness.client, "learn", directions=[direction])
+    assert next_item(harness.client, session_id)["type"] == "presentation"
+    question = next_item(harness.client, session_id)
+    assert question["type"] == "question"
+    assert question["mode"] == "choice"
+    return Asked(session_id, word_id, question)
+
+
+def ask_by_typing(harness: NumbersHarness, direction: str) -> Asked:
+    """A review session over the target seeded `well`, at its due date: asked by typing."""
+    word_id = add_target(harness.client, familiarity="well")
+    move_to_well_due_date(harness)
+    session_id = started(harness.client, "review", directions=[direction])
+    question = next_item(harness.client, session_id)
+    assert question["type"] == "question"
+    assert question["mode"] == "typing"
+    return Asked(session_id, word_id, question)
+
+
+def ask(harness: NumbersHarness, direction: str, mode: str) -> Asked:
+    if mode == "choice":
+        return ask_by_choice(harness, direction)
+    return ask_by_typing(harness, direction)
+
+
+def walk(client: TestClient, session_id: str, body: Mapping[str, object]) -> list[Json]:
+    """Every item up to and including the end, answering each question with `body`."""
+    items: list[Json] = []
+    while len(items) < MAX_ITEMS and (not items or items[-1]["type"] != "end"):
+        item = next_item(client, session_id)
+        items.append(item)
+        if item["type"] == "question":
+            answered(client, item["item_id"], body)
+    assert items[-1]["type"] == "end", f"the session did not end within {MAX_ITEMS} items"
+    return items
