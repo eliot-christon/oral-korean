@@ -5,7 +5,7 @@ import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Feedback } from '../components/Feedback'
 import { Field } from '../components/Field'
-import { BookIcon, KeypadIcon, ReplayIcon } from '../components/icons'
+import { BookIcon, KeypadIcon, LearnIcon, ReplayIcon, ReviewIcon } from '../components/icons'
 import { NavBar } from '../components/NavBar'
 import { TextLink } from '../components/TextLink'
 
@@ -172,6 +172,8 @@ export function Preview() {
             items={[
               { href: '#numbers', label: 'Numbers', icon: <KeypadIcon />, current: true },
               { href: '#words', label: 'Words', icon: <BookIcon />, current: false },
+              { href: '#learn', label: 'Learn', icon: <LearnIcon />, current: false },
+              { href: '#review', label: 'Review', icon: <ReviewIcon />, current: false },
             ]}
           />
         </div>

@@ -1,10 +1,11 @@
 import { useEffect, useRef, type ReactElement } from 'react'
 
-import { BookIcon, KeypadIcon } from './components/icons'
+import { BookIcon, KeypadIcon, LearnIcon, ReviewIcon } from './components/icons'
 import { NavBar, type NavItem } from './components/NavBar'
 import { AddWordsPage } from './pages/AddWordsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { NumbersPage } from './pages/NumbersPage'
+import { SessionPage } from './pages/SessionPage'
 import { WordDetailPage } from './pages/WordDetailPage'
 import { WordsPage } from './pages/WordsPage'
 import { routeHref, useRoute, type PageName, type Route } from './routes'
@@ -22,6 +23,18 @@ const NAV_ENTRIES: (Omit<NavItem, 'current'> & { pages: PageName[] })[] = [
     href: routeHref({ page: 'words' }),
     label: 'Words',
     icon: <BookIcon />,
+  },
+  {
+    pages: ['learn'],
+    href: routeHref({ page: 'learn' }),
+    label: 'Learn',
+    icon: <LearnIcon />,
+  },
+  {
+    pages: ['review'],
+    href: routeHref({ page: 'review' }),
+    label: 'Review',
+    icon: <ReviewIcon />,
   },
 ]
 
@@ -42,6 +55,10 @@ function Page({ route }: { route: Route }): ReactElement {
     case 'word':
       // Keyed, so going from one word to another starts the page afresh.
       return <WordDetailPage key={route.id} id={route.id} />
+    case 'learn':
+    case 'review':
+      // Keyed, so switching between the two starts the page afresh.
+      return <SessionPage key={route.page} kind={route.page} />
     case 'notFound':
       return <NotFoundPage />
   }

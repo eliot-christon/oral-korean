@@ -14,6 +14,8 @@ export type Route =
   | { page: 'words' }
   | { page: 'addWords' }
   | { page: 'word'; id: number }
+  | { page: 'learn' }
+  | { page: 'review' }
   | { page: 'notFound' }
 
 export type PageName = Route['page']
@@ -54,10 +56,15 @@ export function parseRoute(hash: string): Route {
     case 0:
       return { page: 'numbers' }
     case 1:
-      if (first === 'numbers') {
-        return { page: 'numbers' }
+      switch (first) {
+        case 'numbers':
+        case 'words':
+        case 'learn':
+        case 'review':
+          return { page: first }
+        default:
+          return NOT_FOUND
       }
-      return first === 'words' ? { page: 'words' } : NOT_FOUND
     case 2:
       if (first !== 'words') {
         return NOT_FOUND
@@ -83,6 +90,10 @@ export function routeHref(route: LinkableRoute): string {
       return '#/words/new'
     case 'word':
       return `#/words/${route.id}`
+    case 'learn':
+      return '#/learn'
+    case 'review':
+      return '#/review'
   }
 }
 

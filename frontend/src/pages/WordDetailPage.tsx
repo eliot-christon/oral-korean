@@ -18,6 +18,8 @@ import { Feedback } from '../components/Feedback'
 import { Field } from '../components/Field'
 import { TextLink } from '../components/TextLink'
 import {
+  answerModeLabel,
+  directionLabel,
   familiarityLabel,
   formatDateTime,
   formatDays,
@@ -148,7 +150,11 @@ function whatHappened(entry: HistoryEntry, word: WordDetail): string {
       `graded ${gradeLabel(entry.grade)}`
     )
   }
-  return 'Answered'
+  if (entry.direction === null || entry.mode === null) {
+    return 'Answered'
+  }
+  const outcome = entry.correct === true ? 'right' : 'wrong'
+  return `Answered ${outcome}, ${answerModeLabel(entry.mode)}: ${directionLabel(entry.direction)}`
 }
 
 function HistoryItem({ entry, word }: { entry: HistoryEntry; word: WordDetail }) {
