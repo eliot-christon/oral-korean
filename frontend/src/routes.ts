@@ -11,6 +11,7 @@ import { useMemo, useSyncExternalStore } from 'react'
  */
 export type Route =
   | { page: 'numbers' }
+  | { page: 'time' }
   | { page: 'words' }
   | { page: 'addWords' }
   | { page: 'word'; id: number }
@@ -58,6 +59,7 @@ export function parseRoute(hash: string): Route {
     case 1:
       switch (first) {
         case 'numbers':
+        case 'time':
         case 'words':
         case 'learn':
         case 'review':
@@ -84,6 +86,8 @@ export function routeHref(route: LinkableRoute): string {
   switch (route.page) {
     case 'numbers':
       return '#/numbers'
+    case 'time':
+      return '#/time'
     case 'words':
       return '#/words'
     case 'addWords':

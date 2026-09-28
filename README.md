@@ -3,8 +3,7 @@
 A Korean listening-comprehension trainer.
 
 The goal is a set of small exercises that play or read out Korean audio and check whether
-you understood it. More exercise types are planned over time (dates, time, basic
-phrases, ...).
+you understood it. More exercise types are planned over time (dates, basic phrases, ...).
 
 ## What it does today
 
@@ -20,12 +19,20 @@ Both Korean numeral systems are supported, and you choose which one you are prac
 You answer in digits either way. The answer is checked on the server: the browser is sent
 an opaque question id and an audio URL, never the number and never its Korean text.
 
+**Telling the time**, on a clock: the app speaks a time of day in Korean (오후 세 시 삼십오
+분: native Korean for the hour, Sino-Korean for the minutes) and you set it on an analog
+clock, by dragging the hands with a finger or the mouse, or with the arrow keys, plus an
+AM/PM toggle. Choose how fine the minutes are: on the hour and half past, every 5 minutes,
+or any minute. Midnight and noon are in (오전 열두 시, 오후 열두 시), and :00 and :30 are
+read either way (세 시 or 세 시 정각, 세 시 반 or 세 시 삼십 분). Here too the browser gets
+the time only with the verdict.
+
 **A vocabulary trainer** for your own words: you add them, then learn and review them in
 short sessions, heard as well as read.
 
 Speech is [MeloTTS](https://github.com/myshell-ai/MeloTTS) (MIT), run locally with the
-Korean checkpoint. Generated audio is cached on disk, so a number or a word heard twice is
-synthesised once.
+Korean checkpoint. Generated audio is cached on disk, so a number, a time or a word heard
+twice is synthesised once.
 
 ## The vocabulary trainer
 
@@ -185,7 +192,7 @@ builds. CI runs both sides on every push and pull request.
 main.py                  dev launcher
 src/oral_korean/
   api/                   HTTP layer: FastAPI app, routes, helpers exercises share
-  exercises/             exercise logic: numbers, vocabulary words and sessions
+  exercises/             exercise logic: numbers, time of day, vocabulary words and sessions
   korean/                language primitives shared between exercises
   srs/                   word memory with FSRS: seeds, grades, scores, statistics
   storage/               the vocabulary in SQLite, with numbered migrations
@@ -196,9 +203,10 @@ tests/                   pytest suite
 
 The directories mark the seams between concerns. There is deliberately no plugin registry
 or exercise base class: the second exercise showed two helpers worth sharing (pending
-questions by opaque id, and synthesis with a text-free error), and nothing more.
+questions by opaque id, and synthesis with a text-free error), and nothing more. The third,
+the clock, reused those two and needed nothing else.
 
 ## Status
 
-Early but working. The number exercise and the vocabulary trainer are complete; dates and
-time come next.
+Early but working. The number and clock exercises and the vocabulary trainer are complete;
+dates come next.

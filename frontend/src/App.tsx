@@ -1,11 +1,12 @@
 import { useEffect, useRef, type ReactElement } from 'react'
 
-import { BookIcon, KeypadIcon, LearnIcon, ReviewIcon } from './components/icons'
+import { BookIcon, ClockIcon, KeypadIcon, LearnIcon, ReviewIcon } from './components/icons'
 import { NavBar, type NavItem } from './components/NavBar'
 import { AddWordsPage } from './pages/AddWordsPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { NumbersPage } from './pages/NumbersPage'
 import { SessionPage } from './pages/SessionPage'
+import { TimePage } from './pages/TimePage'
 import { WordDetailPage } from './pages/WordDetailPage'
 import { WordsPage } from './pages/WordsPage'
 import { routeHref, useRoute, type PageName, type Route } from './routes'
@@ -17,6 +18,12 @@ const NAV_ENTRIES: (Omit<NavItem, 'current'> & { pages: PageName[] })[] = [
     href: routeHref({ page: 'numbers' }),
     label: 'Numbers',
     icon: <KeypadIcon />,
+  },
+  {
+    pages: ['time'],
+    href: routeHref({ page: 'time' }),
+    label: 'Time',
+    icon: <ClockIcon />,
   },
   {
     pages: ['words', 'addWords', 'word'],
@@ -48,6 +55,8 @@ function Page({ route }: { route: Route }): ReactElement {
   switch (route.page) {
     case 'numbers':
       return <NumbersPage />
+    case 'time':
+      return <TimePage />
     case 'words':
       return <WordsPage />
     case 'addWords':

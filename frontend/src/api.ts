@@ -1,6 +1,7 @@
 /**
  * Typed wrappers around the backend's HTTP API: the numbers exercise
- * (`src/oral_korean/api/routes/numbers.py`), the vocabulary
+ * (`src/oral_korean/api/routes/numbers.py`), the clock exercise
+ * (`src/oral_korean/api/routes/time_of_day.py`), the vocabulary
  * (`src/oral_korean/api/routes/vocab_words.py`) and its learn and review sessions
  * (`src/oral_korean/api/routes/vocab_sessions.py`).
  *
@@ -120,6 +121,67 @@ export async function submitAnswer(questionId: string, answer: string): Promise<
     body: JSON.stringify({ answer }),
   })
   return parseJsonOrThrow<AnswerResponse>(response, 'Could not submit the answer.')
+}
+
+// The clock exercise (`src/oral_korean/api/routes/time_of_day.py`): a time is heard, and set
+// on a clock. The create response carries no time and no text; the answer's does.
+
+export type TimeLevel = 'half_hour' | 'five_minutes' | 'any_minute'
+
+export interface TimeLevelInfo {
+  level: TimeLevel
+  minute_step: number
+}
+
+export interface TimeLevelsResponse {
+  levels: TimeLevelInfo[]
+  default: TimeLevel
+}
+
+export interface TimeQuestionResponse {
+  question_id: string
+  audio_url: string
+  level: TimeLevel
+  minute_step: number
+}
+
+/** A position on a 12-hour clock, as the answer route takes it and gives it back. */
+export interface ClockSelection {
+  period: 'am' | 'pm'
+  hour: number
+  minute: number
+}
+
+export interface TimeAnswerResponse {
+  verdict: 'correct' | 'incorrect'
+  expected: ClockSelection
+  text: string
+}
+
+export async function fetchTimeLevels(): Promise<TimeLevelsResponse> {
+  const response = await fetch('/api/exercises/time/levels')
+  return parseJsonOrThrow<TimeLevelsResponse>(response, 'Could not load the levels.')
+}
+
+export async function createTimeQuestion(level: TimeLevel): Promise<TimeQuestionResponse> {
+  const response = await fetch('/api/exercises/time/questions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ level }),
+  })
+  return parseJsonOrThrow<TimeQuestionResponse>(response, 'Could not draw a new question.')
+}
+
+export async function submitTimeAnswer(
+  questionId: string,
+  selection: ClockSelection,
+): Promise<TimeAnswerResponse> {
+  const response = await fetch(`/api/exercises/time/questions/${questionId}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ period: selection.period, hour: selection.hour, minute: selection.minute }),
+  })
+  return parseJsonOrThrow<TimeAnswerResponse>(response, 'Could not submit the answer.')
 }
 
 // The vocabulary. Every figure below is computed by the backend (`srs/` through the routes):
