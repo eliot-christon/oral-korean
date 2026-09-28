@@ -532,7 +532,7 @@ def test_each_direction_is_asked_in_the_mode_its_own_memory_calls_for(
     tapped = next_item(client, started(client, "review", directions=[T2H], size=1))
 
     assert (typed["prompt"], typed["mode"], typed["options"]) == (KOREAN, "typing", None)
-    assert (tapped["prompt"], tapped["mode"]) == ("; ".join(TRANSLATIONS), "choice")
+    assert (tapped["prompt"], tapped["mode"]) == (", ".join(TRANSLATIONS), "choice")
 
 
 def test_learn_takes_a_word_while_a_ticked_direction_has_no_memory(

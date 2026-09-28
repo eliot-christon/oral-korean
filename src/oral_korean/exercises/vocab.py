@@ -17,6 +17,7 @@ learning step and a word answered by multiple choice never reaches typing at all
 from __future__ import annotations
 
 import random
+import re
 import unicodedata
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ from oral_korean.exercises.vocab_session import (
     SessionSummary,
     WordResult,
 )
-from oral_korean.exercises.vocab_words import Direction, VocabularyWord
+from oral_korean.exercises.vocab_words import Direction, VocabularyWord, split_translations
 from oral_korean.korean import hangul
 from oral_korean.srs.memory import Grade, MemoryState
 
@@ -86,8 +87,9 @@ answer (see the simulation in the epic)."""
 _AnswerSide = Literal["translation", "hangul"]
 
 _MAX_DISTRACTORS: Final = 3
-_TRANSLATION_JOIN: Final = "; "
+_TRANSLATION_JOIN: Final = ", "
 _SPACING_PUNCTUATION: Final = "-/_"
+_PARENTHESISED: Final = re.compile(r"\([^()]*\)")
 
 
 @dataclass(frozen=True)
@@ -313,7 +315,8 @@ def _judge_typed(question: VocabQuestion, answer: SubmittedAnswer) -> bool:
         raise MalformedAnswerError("A typing question needs typed text.")
     if _answer_side(question.direction) == "translation":
         return _translation_matches(question.accepted_answers, answer.text)
-    return hangul.match_key(answer.text) == hangul.match_key(question.accepted_answers[0])
+    answer_key = hangul.match_key(answer.text)
+    return bool(answer_key) and answer_key in _hangul_keys(question.accepted_answers[0])
 
 
 def _answer_side(direction: Direction) -> _AnswerSide:
@@ -404,22 +407,53 @@ def _could_never_be_right(target: VocabularyWord, candidate: VocabularyWord) -> 
         return False
     if hangul.match_key(candidate.korean) == hangul.match_key(target.korean):
         return False
-    target_translations = {_normalise_translation(t) for t in target.translations}
-    candidate_translations = {_normalise_translation(t) for t in candidate.translations}
-    return target_translations.isdisjoint(candidate_translations)
+    return _translation_keys(target.translations).isdisjoint(
+        _translation_keys(candidate.translations)
+    )
 
 
 def _translation_matches(accepted: Sequence[str], answer: str) -> bool:
-    """Whether `answer` matches any of `accepted`, after both are normalised.
+    """Whether every translation in `answer` matches one of `accepted`, once normalised.
 
-    An answer with nothing left after normalisation is wrong even against a translation
-    that normalises to nothing too (`...` is a translation storage accepts): a blank
-    answer must never grade `good`.
+    The answer is split like a word's translations, so `rat` and `rat, mouse` are both right
+    for `rat, mouse`. Each part may keep or drop what the accepted translation has in
+    parentheses: `fun` and `fun (short form)` are both right for `fun (short form)`. A part
+    with nothing left after normalisation makes the answer wrong even against a translation
+    that normalises to nothing too (`...` is a translation storage accepts): a blank answer
+    must never grade `good`.
     """
-    normalised_answer = _normalise_translation(answer)
-    if not normalised_answer:
+    parts = [_normalise_translation(part) for part in split_translations(answer)]
+    if not parts or not all(parts):
         return False
-    return any(_normalise_translation(one) == normalised_answer for one in accepted)
+    keys = _translation_keys(accepted)
+    return all(part in keys for part in parts)
+
+
+def _translation_keys(translations: Sequence[str]) -> set[str]:
+    """Every normalised form a typed part may take to match one of `translations`: each in
+    full, and each without its parenthesised parts. Never the empty key."""
+    keys = {
+        _normalise_translation(form)
+        for translation in translations
+        for form in (translation, _without_parentheses(translation))
+    }
+    return keys - {""}
+
+
+def _hangul_keys(korean: str) -> set[str]:
+    """The Hangul match keys a typed answer may have for `korean`: in full, and without its
+    parenthesised parts. Never the empty key."""
+    return {hangul.match_key(korean), hangul.match_key(_without_parentheses(korean))} - {""}
+
+
+def _without_parentheses(text: str) -> str:
+    """`text` with every parenthesised part removed, innermost first: `fun (short form)` is
+    `fun `."""
+    while True:
+        stripped = _PARENTHESISED.sub(" ", text)
+        if stripped == text:
+            return text
+        text = stripped
 
 
 def _normalise_translation(text: str) -> str:

@@ -441,7 +441,7 @@ def add_word(
 
 def add_target(client: TestClient, familiarity: str = "new") -> int:
     """Add the target word; its id."""
-    word = add_word(client, KOREAN, "; ".join(TRANSLATIONS), familiarity=familiarity)
+    word = add_word(client, KOREAN, ", ".join(TRANSLATIONS), familiarity=familiarity)
     word_id: int = word["id"]
     return word_id
 
