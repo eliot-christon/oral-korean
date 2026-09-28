@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from enum import StrEnum
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
@@ -121,8 +122,43 @@ class VocabularySummary(BaseModel):
     average_score: int | None
 
 
+class TagMatch(StrEnum):
+    """Whether a listed word carries any of the included tags, or all of them."""
+
+    ANY = "any"
+    ALL = "all"
+
+
+class WordSort(StrEnum):
+    """What the list is sorted by: the headline score, the adding order, the next review, or
+    the Korean by code point (dictionary order, for modern Hangul syllables)."""
+
+    SCORE = "score"
+    ADDED = "added"
+    NEXT_REVIEW = "next_review"
+    KOREAN = "korean"
+
+
+class SortOrder(StrEnum):
+    """The direction of the sort."""
+
+    ASC = "asc"
+    DESC = "desc"
+
+
+class WordListQuery(BaseModel):
+    """Which words to list and in what order. With nothing given, every word, in the order
+    they were added. `tag` and `exclude` repeat; a tag stored nowhere matches nothing."""
+
+    tag: list[str] = Field(default_factory=list)
+    match: TagMatch = TagMatch.ANY
+    exclude: list[str] = Field(default_factory=list)
+    sort: WordSort = WordSort.ADDED
+    order: SortOrder = SortOrder.ASC
+
+
 class WordListResponse(BaseModel):
-    """The listed words, in the order they were added, and their summary."""
+    """The listed words, in the order asked, and their summary."""
 
     words: list[WordResponse]
     summary: VocabularySummary
@@ -243,6 +279,34 @@ def _summary(all_statistics: Sequence[WordStatistics]) -> VocabularySummary:
     )
 
 
+def _sort_key(
+    word: VocabularyWord, figures: WordStatistics, sort: WordSort
+) -> int | str | datetime | None:
+    """What `sort` orders `word` by; `None` for a word with no score or no next review."""
+    match sort:
+        case WordSort.SCORE:
+            return figures.score
+        case WordSort.ADDED:
+            # Ids follow the adding order, and tell apart words added in one batch.
+            return word.id
+        case WordSort.NEXT_REVIEW:
+            return figures.next_review
+        case WordSort.KOREAN:
+            return word.korean
+
+
+def _sorted(
+    listed: Sequence[tuple[VocabularyWord, WordStatistics]], sort: WordSort, order: SortOrder
+) -> list[tuple[VocabularyWord, WordStatistics]]:
+    """`listed`, in adding order, sorted by `sort` in `order`: ties keep the adding order and
+    a word without a value comes last, in either order."""
+    keyed = [(_sort_key(word, figures, sort), (word, figures)) for word, figures in listed]
+    valued = [(key, item) for key, item in keyed if key is not None]
+    # sorted() is stable, and stays so with reverse=True: tied words keep their order.
+    valued.sort(key=lambda pair: pair[0], reverse=order is SortOrder.DESC)
+    return [item for _, item in valued] + [item for key, item in keyed if key is None]
+
+
 def _familiarity_level(familiarity: Familiarity, at: datetime) -> FamiliarityLevel:
     seeded = seed(familiarity, at, fuzzing=False)
     if seeded is None:
@@ -262,15 +326,30 @@ def _familiarity_level(familiarity: Familiarity, at: datetime) -> FamiliarityLev
 
 @router.get("/words", response_model=WordListResponse)
 def list_words(
-    request: Request, tag: Annotated[str | None, Query()] = None
+    request: Request, query: Annotated[WordListQuery, Query()]
 ) -> WordListResponse:
-    """Every word, or every word carrying `tag`, with statistics and a summary."""
+    """The words the query selects, in the order it asks, with statistics and a summary of
+    those words alone.
+
+    Raises:
+        HTTPException: 422 when a tag is both included and excluded.
+    """
+    both = sorted(set(query.tag) & set(query.exclude))
+    if both:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A tag cannot be both included and excluded: {', '.join(both)}.",
+        )
     at = _now(request)
-    words = _word_store(request).list_words(tag=tag)
-    responses = [_word_response(word, at) for word in words]
+    words = _word_store(request).list_words(
+        tags=query.tag, match_all=query.match is TagMatch.ALL, exclude=query.exclude
+    )
+    listed = _sorted(
+        [(word, _word_statistics(word, at)) for word in words], query.sort, query.order
+    )
     return WordListResponse(
-        words=responses,
-        summary=_summary([_word_statistics(word, at) for word in words]),
+        words=[_word_response(word, at) for word, _ in listed],
+        summary=_summary([figures for _, figures in listed]),
     )
 
 

@@ -66,26 +66,14 @@ DIRECTIONS = (
 """The four direction wire values, the keys of `direction_statistics` (vocab-directions T01)."""
 
 WORD_KEYS = {
+    "added_at",
+    "direction_statistics",
+    "familiarity",
     "id",
     "korean",
-    "translations",
-    "tags",
-    "familiarity",
-    "added_at",
     "statistics",
-    "direction_statistics",
-}
-STATISTICS_KEYS = {
-    "score",
-    "recall",
-    "phase",
-    "stability",
-    "difficulty",
-    "next_review",
-    "last_review",
-    "due",
-    "review_count",
-    "lapse_count",
+    "tags",
+    "translations",
 }
 NEW_STATISTICS: Json = {
     "score": None,
@@ -100,6 +88,7 @@ NEW_STATISTICS: Json = {
     "lapse_count": 0,
 }
 """A new word's statistics, and those of a direction with no memory."""
+STATISTICS_KEYS = set(NEW_STATISTICS)
 
 
 @pytest.fixture(name="harness")
@@ -410,6 +399,125 @@ def test_an_unknown_tag_lists_nothing_with_a_summary_of_zeros(client: TestClient
     assert body == {
         "words": [],
         "summary": {"total": 0, "new": 0, "due": 0, "average_score": None},
+    }
+
+
+def listed_with(client: TestClient, query: str) -> list[str]:
+    """The Korean of the words a raw query string lists, in order: `tag` and `exclude`
+    repeat, which `listed`'s keyword arguments cannot say."""
+    response = client.get(f"{WORDS}?{query}")
+    assert response.status_code == 200, response.text
+    return [word["korean"] for word in response.json()["words"]]
+
+
+def test_several_tags_match_any_by_default_or_all(client: TestClient) -> None:
+    """A{x}, B{x, y}, C{y}, D{}: any of x and y is A, B, C; all of them is B."""
+    for korean, tags in (("가", ["x"]), ("나", ["x", "y"]), ("다", ["y"]), ("라", [])):
+        added(client, korean, tags=tags)
+
+    assert listed_with(client, "tag=x&tag=y") == ["가", "나", "다"]
+    assert listed_with(client, "tag=x&tag=y&match=any") == ["가", "나", "다"]
+    assert listed_with(client, "tag=x&tag=y&match=all") == ["나"]
+    assert listed_with(client, "exclude=x") == ["다", "라"]
+    assert listed_with(client, "tag=y&exclude=x") == ["다"]
+
+
+def test_a_tag_both_included_and_excluded_is_a_422_naming_it(client: TestClient) -> None:
+    added(client, "사과", tags=["x"])
+
+    response = client.get(f"{WORDS}?tag=x&tag=y&exclude=x")
+
+    assert response.status_code == 422
+    assert isinstance(response.json()["detail"], str)
+    assert "x" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["match=some", "sort=meaning", "order=up"],
+)
+def test_an_unknown_match_sort_or_order_is_pydantics_422(client: TestClient, query: str) -> None:
+    assert client.get(f"{WORDS}?{query}").status_code == 422
+
+
+def test_no_parameters_list_every_word_in_adding_order_as_the_defaults_do(
+    client: TestClient,
+) -> None:
+    """Today's response: every word, adding order, unfiltered summary, nothing else."""
+    for korean, familiarity in (("사과", "well"), ("가방", "new"), ("나무", "a_little")):
+        added(client, korean, tags=["x"], familiarity=familiarity)
+
+    body = listed(client)
+
+    assert set(body) == {"words", "summary"}
+    assert [word["korean"] for word in body["words"]] == ["사과", "가방", "나무"]
+    assert body["summary"]["total"] == 3
+    assert body == listed(client, match="any", sort="added", order="asc")
+
+
+def test_sort_by_score_puts_new_words_last_in_either_order(client: TestClient) -> None:
+    """Strong, weak and new: highest first is strong, weak, new; lowest first weak, strong,
+    new."""
+    added(client, "새", familiarity="new")
+    added(client, "약", familiarity="a_little")
+    added(client, "강", familiarity="very_well")
+    assert seeded_score(Familiarity.VERY_WELL) > seeded_score(Familiarity.A_LITTLE)
+
+    assert listed_with(client, "sort=score&order=desc") == ["강", "약", "새"]
+    assert listed_with(client, "sort=score&order=asc") == ["약", "강", "새"]
+    assert listed_with(client, "sort=score") == ["약", "강", "새"]
+
+
+def test_sort_by_score_breaks_ties_by_adding_order(client: TestClient) -> None:
+    for korean in ("다", "가", "나"):
+        added(client, korean, familiarity="well")
+
+    assert listed_with(client, "sort=score&order=desc") == ["다", "가", "나"]
+    assert listed_with(client, "sort=score&order=asc") == ["다", "가", "나"]
+
+
+def test_sort_by_added_descending_lists_the_newest_first(harness: NumbersHarness) -> None:
+    client = harness.client
+    added(client, "첫")
+    harness.clock.advance(timedelta(minutes=1))
+    added(client, "둘")
+    assert paste(client, "셋 ; three\n넷 ; four").status_code == 201
+
+    assert listed_with(client, "sort=added&order=desc") == ["넷", "셋", "둘", "첫"]
+    assert listed_with(client, "sort=added") == ["첫", "둘", "셋", "넷"]
+
+
+def test_sort_by_korean_follows_dictionary_order(client: TestClient) -> None:
+    for korean in ("사과", "가방", "나무"):
+        added(client, korean)
+
+    assert listed_with(client, "sort=korean&order=asc") == ["가방", "나무", "사과"]
+    assert listed_with(client, "sort=korean&order=desc") == ["사과", "나무", "가방"]
+
+
+def test_sort_by_next_review_puts_the_soonest_first_and_new_words_last(
+    client: TestClient,
+) -> None:
+    added(client, "새", familiarity="new")
+    added(client, "강", familiarity="very_well")
+    added(client, "약", familiarity="a_little")
+
+    assert listed_with(client, "sort=next_review&order=asc") == ["약", "강", "새"]
+    assert listed_with(client, "sort=next_review&order=desc") == ["강", "약", "새"]
+
+
+def test_the_summary_counts_only_the_listed_words(client: TestClient) -> None:
+    added(client, "사과", tags=["x"], familiarity="new")
+    added(client, "배", tags=["x"], familiarity="very_well")
+    added(client, "감", tags=["y"], familiarity="a_little")
+
+    summary = client.get(f"{WORDS}?exclude=y&sort=score&order=desc").json()["summary"]
+
+    assert summary == {
+        "total": 2,
+        "new": 1,
+        "due": 0,
+        "average_score": seeded_score(Familiarity.VERY_WELL),
     }
 
 
