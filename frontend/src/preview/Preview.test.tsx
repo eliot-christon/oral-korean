@@ -60,6 +60,9 @@ describe('Preview', () => {
     // 스물셋, 마흔둘, 아흔아홉, 백) - read from the ticket, not from any implementation output.
     expect(container.textContent).toContain('마흔둘')
 
+    // The clock (time-exercise T04): both hands as sliders.
+    expect(screen.getAllByRole('slider').length).toBe(2)
+
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 })
