@@ -1,23 +1,24 @@
-"""HTTP routes for learn and review sessions: presentations, questions, answers, scores.
+"""HTTP routes for learn and review sessions: choosing the words, presentations, questions,
+answers, scores.
 
 Thin over vocab-sessions T02: this module chooses no direction or mode, judges no answer,
-maps no grade and computes no memory. `exercises.vocab` builds and judges each question and
-sequences the session, `srs.memory` applies the grade, `storage.words` chooses the words and
-keeps the result, and `api/pending.py` and `api/audio.py` are the helpers shared with the
-numbers exercise.
+maps no grade and computes no memory. `exercises.vocab` chooses each word's directions,
+builds and judges each question and sequences the session, `srs.memory` applies the grade,
+`storage.words` chooses the words and keeps the result, and `api/pending.py` and
+`api/audio.py` are the helpers shared with the numbers exercise.
 
 Two invariants live here, because only the server can keep them:
 
 - **The answer never reaches the browser before it is submitted.** A question carries its
   opaque item id, never the word's id; the answer side only ever as one option among several;
   and the audio of a voice question by item id, never the Korean it speaks.
-- **A word is scored at most once per session, from its first attempt.** Answering *takes*
-  the item out of the store before anything is written, so of two answers racing for one
-  item exactly one is judged; a malformed answer is refused before the take, so it consumes
-  nothing. Each session also has its own lock, held by `next` and by an answer from the
-  take to the plan's bookkeeping: two `next` calls at once (a React effect run twice), or a
-  `next` landing while an answer is being scored, never hand out a second question for one
-  item.
+- **A word is scored at most once per direction per session, from its first attempt in that
+  direction.** Answering *takes* the item out of the store before anything is written, so of
+  two answers racing for one item exactly one is judged; a malformed answer is refused
+  before the take, so it consumes nothing. Each session also has its own lock, held by
+  `next` and by an answer from the take to the plan's bookkeeping: two `next` calls at once
+  (a React effect run twice), or a `next` landing while an answer is being scored, never hand
+  out a second question for one item.
 
 Sessions and items live in two plain dicts on `app.state`, like the numbers questions: a
 restart loses a session, never a score, since a scored answer is written before its response.
@@ -27,12 +28,12 @@ from __future__ import annotations
 
 import dataclasses
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
@@ -42,7 +43,6 @@ from oral_korean.exercises.vocab import (
     ChoiceAnswer,
     Direction,
     DontKnowAnswer,
-    ItemKind,
     MalformedAnswerError,
     SessionItem,
     SessionKind,
@@ -52,13 +52,13 @@ from oral_korean.exercises.vocab import (
     VocabJudgement,
     VocabQuestion,
     build_question,
-    draw_direction,
+    directions_to_ask,
     grade_for,
     judge_answer,
 )
 from oral_korean.exercises.vocab_words import VocabularyWord
 from oral_korean.srs.memory import WordStatistics, apply_grade, statistics
-from oral_korean.storage.words import AnswerContext, WordStore
+from oral_korean.storage.words import AnswerContext, QueueOrderError, WordStore
 from oral_korean.tts.cache import AudioCache
 
 router = APIRouter(prefix="/vocab")
@@ -70,12 +70,17 @@ _DEFAULT_SIZES = {SessionKind.LEARN: 5, SessionKind.REVIEW: 20}
 
 
 class StartSessionRequest(BaseModel):
-    """A learn or review session over at most `size` words, optionally of one tag."""
+    """A learn or review session over at most `size` words, optionally of one tag.
+
+    A review may name its words, in order, in `word_ids` (the picker): it takes the first
+    `size` of them, whether due or not, and `tag` does not apply. A learn session always takes
+    the top of the learn queue."""
 
     kind: SessionKind
     tag: str | None = None
     directions: list[Direction] = Field(default_factory=lambda: list(Direction), min_length=1)
     size: int | None = None
+    word_ids: list[int] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _size_within_its_kinds_range(self) -> Self:
@@ -83,6 +88,48 @@ class StartSessionRequest(BaseModel):
         if self.size is not None and not 1 <= self.size <= maximum:
             raise ValueError(f"A {self.kind} session takes 1 to {maximum} words.")
         return self
+
+    @model_validator(mode="after")
+    def _word_ids_only_for_a_review(self) -> Self:
+        if self.word_ids is not None and self.kind is SessionKind.LEARN:
+            raise ValueError("A learn session takes the top of the learn queue, not word ids.")
+        return self
+
+
+class QueuedWord(BaseModel):
+    """A word as the learn queue and the review picker list it: enough to recognise it."""
+
+    id: int
+    korean: str
+    translations: list[str]
+    tags: list[str]
+
+
+class LearnQueueResponse(BaseModel):
+    """The words a learn session can take, in the order it takes them."""
+
+    words: list[QueuedWord]
+
+
+class ReorderQueueRequest(BaseModel):
+    """Words to move to the top of the learn queue, in this order."""
+
+    word_ids: list[int]
+
+
+class ReviewCandidate(QueuedWord):
+    """A word the picker can review: whether it is due, and its earliest next review among
+    the ticked directions it has learned."""
+
+    due: bool
+    next_review: datetime
+
+
+class ReviewCandidatesResponse(BaseModel):
+    """The words that can be reviewed: the due ones first, most overdue first, then the
+    others, soonest first."""
+
+    words: list[ReviewCandidate]
 
 
 class StartSessionResponse(BaseModel):
@@ -93,10 +140,13 @@ class StartSessionResponse(BaseModel):
 
 
 class Progress(BaseModel):
-    """Words whose scored question has been answered, out of the session's words."""
+    """Words whose every scored question has been answered, out of the session's words, and
+    the same in scored questions. Never which word a question is about."""
 
     done: int
     total: int
+    questions_done: int
+    question_total: int
 
 
 class PresentationResponse(BaseModel):
@@ -127,18 +177,32 @@ class QuestionResponse(BaseModel):
     progress: Progress
 
 
-class SummaryWord(BaseModel):
-    korean: str
-    translations: list[str]
+class DirectionResultResponse(BaseModel):
+    """How a word's scored attempt went in one direction."""
+
+    direction: Direction
     correct: bool
 
 
+class SummaryWord(BaseModel):
+    """A word's scored attempts: `correct` only if every direction asked was right, each
+    direction listed in `Direction` order."""
+
+    korean: str
+    translations: list[str]
+    correct: bool
+    directions: list[DirectionResultResponse]
+
+
 class SessionSummaryResponse(BaseModel):
-    """Each word's first attempt, in session order, and the totals."""
+    """Each word's scored attempts, in the order the session took the words, and the totals
+    in words and in scored questions."""
 
     words: list[SummaryWord]
     word_count: int
     correct_count: int
+    question_count: int
+    correct_question_count: int
 
 
 class EndResponse(BaseModel):
@@ -169,7 +233,8 @@ class AnswerRequest(BaseModel):
 
 
 class AnswerResponse(BaseModel):
-    """The verdict, the word, and its statistics before and after (null if it was deleted)."""
+    """The verdict, the word, and the asked direction's statistics before and after (null if
+    the word was deleted)."""
 
     correct: bool
     korean: str
@@ -185,22 +250,18 @@ class VocabSession:
     """One session in progress: its plan, and what it has handed out.
 
     Attributes:
-        directions: the directions its questions are drawn from.
-        plan: T02's sequencing.
+        plan: T02's sequencing, which also counts the progress.
         words: every word at session start, by id, for the summary.
         undelivered: an item the plan handed out whose response failed (synthesis), kept
             so the next call serves the same word instead of skipping it.
         shown_item_id: the item id last handed to the browser, while it stands.
-        done: words whose scored question has been answered.
         lock: serialises `next` with itself and with an answer, take to bookkeeping.
     """
 
-    directions: tuple[Direction, ...]
     plan: SessionPlan
     words: dict[int, VocabularyWord]
     undelivered: SessionItem | None = None
     shown_item_id: str | None = None
-    done: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -243,21 +304,32 @@ def _now(request: Request) -> datetime:
 
 @router.post("/sessions", response_model=StartSessionResponse, status_code=201)
 def start_session(body: StartSessionRequest, request: Request) -> StartSessionResponse:
-    """Start a session over new words (learn) or due words (review); 409 if there is none."""
+    """Start a session over the top of the learn queue (learn), or the words chosen or else
+    the due ones (review), each asked in the ticked directions it needs; 409 if there is none,
+    422 for a chosen word that cannot be reviewed."""
     store = _word_store(request)
+    at = _now(request)
     size = body.size if body.size is not None else _DEFAULT_SIZES[body.kind]
-    if body.kind is SessionKind.LEARN:
-        words = store.new_words(tag=body.tag, limit=size)
+    ticked = set(body.directions)
+    if body.word_ids is not None:
+        candidates = _chosen_words(store, body.word_ids, ticked, at)[:size]
+    elif body.kind is SessionKind.LEARN:
+        candidates = store.new_words(tag=body.tag, directions=ticked, limit=size)
     else:
-        words = store.due_words(_now(request), tag=body.tag, limit=size)
-    if not words:
+        candidates = store.due_words(at, tag=body.tag, directions=ticked, limit=size)
+    batch = [
+        (word, asked)
+        for word in candidates
+        if (asked := directions_to_ask(word, body.kind, ticked, at))
+    ]
+    if not batch:
         tagged = "" if body.tag is None else f" tagged {body.tag!r}"
         raise HTTPException(status_code=409, detail=f"There is nothing to {body.kind}{tagged}.")
 
+    words = [word for word, _ in batch]
     directions = tuple(dict.fromkeys(body.directions))
     session = VocabSession(
-        directions=directions,
-        plan=SessionPlan(body.kind, words),
+        plan=SessionPlan(body.kind, batch),
         words={word.id: word for word in words},
     )
     session_id = store_pending(_sessions(request), session)
@@ -267,6 +339,54 @@ def start_session(body: StartSessionRequest, request: Request) -> StartSessionRe
         word_count=len(words),
         directions=list(directions),
     )
+
+
+@router.get("/learn-queue", response_model=LearnQueueResponse)
+def get_learn_queue(
+    request: Request,
+    tag: Annotated[str | None, Query()] = None,
+    directions: Annotated[list[Direction] | None, Query()] = None,
+) -> LearnQueueResponse:
+    """The words with something left to learn in the ticked directions, in queue order."""
+    ticked = set(directions or Direction)
+    words = _word_store(request).learn_queue(tag=tag, directions=ticked)
+    return LearnQueueResponse(words=[_queued_word(word) for word in words])
+
+
+@router.put("/learn-queue", response_model=LearnQueueResponse)
+def reorder_learn_queue(body: ReorderQueueRequest, request: Request) -> LearnQueueResponse:
+    """Move words to the top of the learn queue; the whole queue after it. 422, with nothing
+    moved, for an unknown or repeated id or a word with nothing left to learn."""
+    store = _word_store(request)
+    try:
+        store.reorder_learn_queue(body.word_ids)
+    except QueueOrderError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return LearnQueueResponse(words=[_queued_word(word) for word in store.learn_queue()])
+
+
+@router.get("/review-candidates", response_model=ReviewCandidatesResponse)
+def get_review_candidates(
+    request: Request,
+    tag: Annotated[str | None, Query()] = None,
+    directions: Annotated[list[Direction] | None, Query()] = None,
+) -> ReviewCandidatesResponse:
+    """Every word learned in a ticked direction, due first. Stores nothing."""
+    at = _now(request)
+    ticked = set(directions or Direction)
+    words = []
+    for word in _word_store(request).review_candidates(tag=tag, directions=ticked):
+        next_review = min(
+            memory.next_review
+            for direction, memory in word.memories.items()
+            if direction in ticked and memory is not None
+        )
+        words.append(
+            ReviewCandidate(
+                **_queued_word(word).model_dump(), due=at >= next_review, next_review=next_review
+            )
+        )
+    return ReviewCandidatesResponse(words=words)
 
 
 @router.post("/sessions/{session_id}/next")
@@ -295,7 +415,7 @@ def next_item(
             return EndResponse(summary=_summary(session))
         session.undelivered = item
 
-        pending = _prepare(request, session_id, session, item)
+        pending = _prepare(request, session_id, item)
         item_id = store_pending(items, pending)
         session.undelivered = None
         session.shown_item_id = item_id
@@ -330,8 +450,6 @@ def submit_answer(item_id: str, body: AnswerRequest, request: Request) -> Answer
         take_pending_or_404(items, item_id)
         scored, before, after = _score(request, pending, pending.question, judgement)
         session.plan.record_answer(pending.item.number, correct=judgement.correct)
-        if pending.item.scored:
-            session.done += 1
         if session.shown_item_id == item_id:
             session.shown_item_id = None
 
@@ -346,8 +464,44 @@ def submit_answer(item_id: str, body: AnswerRequest, request: Request) -> Answer
     )
 
 
+def _chosen_words(
+    store: WordStore, word_ids: Sequence[int], ticked: set[Direction], at: datetime
+) -> tuple[VocabularyWord, ...]:
+    """The words a review was asked for, in order, each with a learned ticked direction.
+
+    Raises:
+        HTTPException: 422, naming ids only, for a repeated or unknown id or a word with no
+            learned ticked direction.
+    """
+    if len(set(word_ids)) != len(word_ids):
+        raise HTTPException(status_code=422, detail="The same word is chosen twice.")
+    words = store.get_words(word_ids)
+    unknown = sorted(set(word_ids) - {word.id for word in words})
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"No word with id {_listed(unknown)}.")
+    unlearned = [
+        word.id for word in words if not directions_to_ask(word, SessionKind.REVIEW, ticked, at)
+    ]
+    if unlearned:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Word {_listed(unlearned)} has no ticked direction learned to review.",
+        )
+    return words
+
+
+def _listed(word_ids: Sequence[int]) -> str:
+    return ", ".join(str(word_id) for word_id in word_ids)
+
+
+def _queued_word(word: VocabularyWord) -> QueuedWord:
+    return QueuedWord(
+        id=word.id, korean=word.korean, translations=list(word.translations), tags=list(word.tags)
+    )
+
+
 def _prepare(
-    request: Request, session_id: str, session: VocabSession, item: SessionItem
+    request: Request, session_id: str, item: SessionItem
 ) -> PendingVocabItem:
     """Build the item's question from the word as it is now, and synthesise its audio.
 
@@ -359,10 +513,8 @@ def _prepare(
     store = _word_store(request)
     word = store.get_word(item.word.id) or item.word
     question = None
-    if item.kind is ItemKind.QUESTION:
-        question = build_question(
-            word, draw_direction(session.directions), candidates=store.list_words()
-        )
+    if item.direction is not None:
+        question = build_question(word, item.direction, candidates=store.list_words())
     pending = PendingVocabItem(
         session_id=session_id, item=dataclasses.replace(item, word=word), question=question
     )
@@ -375,7 +527,13 @@ def _prepare(
 def _item_response(
     request: Request, session: VocabSession, item_id: str, pending: PendingVocabItem
 ) -> PresentationResponse | QuestionResponse:
-    progress = Progress(done=session.done, total=len(session.words))
+    counts = session.plan.progress()
+    progress = Progress(
+        done=counts.words_done,
+        total=counts.word_count,
+        questions_done=counts.questions_done,
+        question_total=counts.question_count,
+    )
     audio_url = None
     if _speech(pending) is not None:
         audio_url = str(request.app.url_path_for(_AUDIO_ROUTE_NAME, item_id=item_id))
@@ -414,19 +572,21 @@ def _score(
     question: VocabQuestion,
     judgement: VocabJudgement,
 ) -> tuple[bool, WordStatistics | None, WordStatistics | None]:
-    """Grade and record the answer if it is the word's scored one; whether it was, and the
-    word's statistics before and after (the same for practice, `None` for a deleted word)."""
+    """Grade and record the answer into the asked direction's memory if it is the scored one;
+    whether it was, and that direction's statistics before and after (the same for practice,
+    `None` for a deleted word)."""
     store = _word_store(request)
     at = _now(request)
     word = store.get_word(question.word_id)
     if word is None:
         return False, None, None
-    before = statistics(word.memory, at)
+    memory = word.memories[question.direction]
+    before = statistics(memory, at)
     if not pending.item.scored:
         return False, before, before
 
     grade = grade_for(correct=judgement.correct, mode=question.mode)
-    state, record = apply_grade(word.memory, grade, at)
+    state, record = apply_grade(memory, grade, at)
     context = AnswerContext(
         direction=question.direction, mode=question.mode, correct=judgement.correct
     )
@@ -445,8 +605,16 @@ def _summary(session: VocabSession) -> SessionSummaryResponse:
                 korean=word.korean,
                 translations=list(word.translations),
                 correct=result.correct,
+                directions=[
+                    DirectionResultResponse(direction=entry.direction, correct=entry.correct)
+                    for entry in result.directions
+                ],
             )
         )
     return SessionSummaryResponse(
-        words=words, word_count=summary.word_count, correct_count=summary.correct_count
+        words=words,
+        word_count=summary.word_count,
+        correct_count=summary.correct_count,
+        question_count=summary.question_count,
+        correct_question_count=summary.correct_question_count,
     )

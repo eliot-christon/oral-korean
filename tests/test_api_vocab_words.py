@@ -6,7 +6,11 @@ Every route lives under `/api/vocab`. The paths and the response shapes are a co
 - A **word**: `id`, `korean`, `translations` (list), `tags` (list), `familiarity`,
   `added_at`, and `statistics` at the clock's instant: `score`, `recall` (whole percents,
   null for a new word), `phase`, `stability`, `difficulty`, `next_review`, `last_review`,
-  `due`, `review_count`, `lapse_count`.
+  `due`, `review_count`, `lapse_count`. Since vocab-directions T01, `statistics` is the
+  word-level aggregate of the four directions' memories (`srs.aggregate_statistics`: the mean
+  strength, the earliest next review, counts summed, `recall`, `stability` and `difficulty`
+  null), and `direction_statistics` joins it: an object keyed by the four direction wire
+  values, each in the shape of `statistics`, all four always present.
 - The **list**: `{"words": [...], "summary": {"total", "new", "due", "average_score"}}`.
 - One word's **detail**: a word plus `history`, each entry `reviewed_at`, `grade`, `is_seed`,
   `recall_before` (a whole percent, null for a seed), `stability`, `difficulty`,
@@ -52,6 +56,50 @@ FAMILIARITY = f"{VOCAB}/familiarity"
 T0 = HARNESS_START
 
 type Json = dict[str, Any]
+
+DIRECTIONS = (
+    "hangul_to_translation",
+    "translation_to_hangul",
+    "voice_to_hangul",
+    "voice_to_translation",
+)
+"""The four direction wire values, the keys of `direction_statistics` (vocab-directions T01)."""
+
+WORD_KEYS = {
+    "id",
+    "korean",
+    "translations",
+    "tags",
+    "familiarity",
+    "added_at",
+    "statistics",
+    "direction_statistics",
+}
+STATISTICS_KEYS = {
+    "score",
+    "recall",
+    "phase",
+    "stability",
+    "difficulty",
+    "next_review",
+    "last_review",
+    "due",
+    "review_count",
+    "lapse_count",
+}
+NEW_STATISTICS: Json = {
+    "score": None,
+    "recall": None,
+    "phase": "new",
+    "stability": None,
+    "difficulty": None,
+    "next_review": None,
+    "last_review": None,
+    "due": False,
+    "review_count": 0,
+    "lapse_count": 0,
+}
+"""A new word's statistics, and those of a direction with no memory."""
 
 
 @pytest.fixture(name="harness")
@@ -154,22 +202,15 @@ def test_adding_a_word_returns_it_new_with_an_id_and_lists_it(client: TestClient
     assert word["tags"] == ["food"]
     assert word["familiarity"] == "new"
     assert instant(word["added_at"]) == T0
-    assert word["statistics"] == {
-        "score": None,
-        "recall": None,
-        "phase": "new",
-        "stability": None,
-        "difficulty": None,
-        "next_review": None,
-        "last_review": None,
-        "due": False,
-        "review_count": 0,
-        "lapse_count": 0,
-    }
+    assert word["statistics"] == NEW_STATISTICS
+    assert word["direction_statistics"] == {direction: NEW_STATISTICS for direction in DIRECTIONS}
     assert listed(client)["words"] == [word]
 
 
-def test_adding_a_word_known_well_seeds_it(client: TestClient) -> None:
+def test_adding_a_word_known_well_seeds_it_in_every_direction(client: TestClient) -> None:
+    """Each direction reads the seed's own figures; the headline is the word-level aggregate,
+    which keeps the score, the dates and the counts and has no recall, stability or difficulty.
+    """
     state, record = seeded(Familiarity.WELL)
 
     word = added(client, "사과", "apple", familiarity="well")
@@ -177,18 +218,72 @@ def test_adding_a_word_known_well_seeds_it(client: TestClient) -> None:
     statistics = word["statistics"]
     assert word["familiarity"] == "well"
     assert statistics["score"] == score(state)
-    assert statistics["recall"] == 100
+    assert (statistics["recall"], statistics["stability"], statistics["difficulty"]) == (
+        None,
+        None,
+        None,
+    )
     assert statistics["phase"] == "review"
-    assert statistics["stability"] == state.stability
-    assert statistics["difficulty"] == state.difficulty
     assert instant(statistics["next_review"]) == state.next_review
     assert instant(statistics["last_review"]) == T0
     assert statistics["due"] is False
     assert statistics["review_count"] == 0
+    for direction in DIRECTIONS:
+        own = word["direction_statistics"][direction]
+        assert own["score"] == score(state)
+        assert own["recall"] == 100
+        assert own["phase"] == "review"
+        assert own["stability"] == state.stability
+        assert own["difficulty"] == state.difficulty
+        assert instant(own["next_review"]) == state.next_review
+        assert instant(own["last_review"]) == T0
+        assert (own["due"], own["review_count"], own["lapse_count"]) == (False, 0, 0)
     history = detail(client, word["id"])["history"]
     assert len(history) == 1
     assert history[0]["is_seed"] is True
+    assert history[0]["direction"] is None
     assert history[0]["grade"] == record.grade.value == "good"
+
+
+def test_a_seed_is_drawn_once_and_shared_by_the_four_directions(client: TestClient) -> None:
+    """`very_well`'s eight-day first delay is fuzzed: four separately drawn seeds could land on
+    four dates. One seed, copied, gives four identical statistics."""
+    word = added(client, "사과", "apple", familiarity="very_well")
+
+    per_direction = list(word["direction_statistics"].values())
+
+    assert len(per_direction) == 4
+    assert all(figures == per_direction[0] for figures in per_direction)
+    assert word["statistics"]["next_review"] == per_direction[0]["next_review"]
+
+
+@pytest.mark.parametrize("familiarity", ["new", "a_little", "well", "very_well"])
+def test_a_word_has_its_headline_statistics_and_one_set_per_direction(
+    client: TestClient, familiarity: str
+) -> None:
+    """Additive: every key a word had stays, `direction_statistics` joins them, keyed by the
+    four direction wire values, each in the same shape as `statistics`. The list, the detail
+    and an edit carry it too."""
+    word = added(client, "사과", "apple", familiarity=familiarity)
+    edited = client.put(
+        word_path(word["id"]), json={"korean": "사과", "translations": "pomme", "tags": []}
+    ).json()
+
+    for body in (word, listed(client)["words"][0], detail(client, word["id"]), edited):
+        assert set(body) - {"history"} == WORD_KEYS
+        assert set(body["statistics"]) == STATISTICS_KEYS
+        assert set(body["direction_statistics"]) == set(DIRECTIONS)
+        for figures in body["direction_statistics"].values():
+            assert set(figures) == STATISTICS_KEYS
+
+
+def test_a_pasted_word_carries_its_statistics_per_direction(client: TestClient) -> None:
+    body = paste(client, "사과 ; apple", familiarity="well").json()
+
+    (word,) = body["words"]
+
+    assert set(word) == WORD_KEYS
+    assert set(word["direction_statistics"]) == set(DIRECTIONS)
 
 
 def test_translations_are_split_as_typed(client: TestClient) -> None:
@@ -245,8 +340,11 @@ def test_a_valid_paste_adds_every_word_seeded_and_tagged(client: TestClient) -> 
     assert [word["korean"] for word in words] == ["사과", "배"]
     for word in words:
         assert word["tags"] == ["food"]
-        assert word["statistics"]["recall"] == 100
+        assert word["statistics"]["score"] == score(state)
         assert instant(word["statistics"]["next_review"]) == state.next_review
+        for figures in word["direction_statistics"].values():
+            assert figures["recall"] == 100
+            assert instant(figures["next_review"]) == state.next_review
     assert listed(client)["words"] == words
 
 
@@ -332,8 +430,10 @@ def test_the_summary_moves_with_the_clock(harness: NumbersHarness) -> None:
     assert a_day_later["summary"]["due"] == 1
     (little_later,) = [word for word in a_day_later["words"] if word["id"] == little["id"]]
     assert little_later["statistics"]["due"] is True
-    assert little_later["statistics"]["recall"] < 100
     assert little_later["statistics"]["score"] == little["statistics"]["score"]
+    for figures in little_later["direction_statistics"].values():
+        assert figures["due"] is True
+        assert figures["recall"] < 100
 
 
 def test_the_average_score_ignores_new_words(client: TestClient) -> None:
@@ -391,15 +491,21 @@ def test_an_unknown_word_is_a_json_404(client: TestClient) -> None:
 
 
 def test_recall_decays_while_the_score_stays(harness: NumbersHarness) -> None:
+    """Recall is a per-direction figure: the headline has none, each direction's decays."""
     word = added(harness.client, "사과", "apple", familiarity="well")
-    assert word["statistics"]["recall"] == 100
+    assert word["direction_statistics"]["hangul_to_translation"]["recall"] == 100
 
     harness.clock.advance(timedelta(days=7))
-    later = detail(harness.client, word["id"])["statistics"]
+    later = detail(harness.client, word["id"])
 
-    assert later["recall"] < 100
-    assert later["score"] == word["statistics"]["score"]
-    assert later["due"] is True
+    assert later["statistics"]["recall"] is None
+    assert later["statistics"]["score"] == word["statistics"]["score"]
+    assert later["statistics"]["due"] is True
+    for direction in DIRECTIONS:
+        figures = later["direction_statistics"][direction]
+        assert figures["recall"] < 100
+        assert figures["score"] == word["direction_statistics"][direction]["score"]
+        assert figures["due"] is True
 
 
 # ---------------------------------------------------------------------------------
@@ -429,6 +535,7 @@ def test_editing_changes_the_text_and_keeps_the_memory(client: TestClient) -> No
     assert after["familiarity"] == "well"
     assert after["added_at"] == before["added_at"]
     assert after["statistics"] == before["statistics"]
+    assert after["direction_statistics"] == before["direction_statistics"]
     assert detail(client, word["id"])["history"] == before["history"]
 
 

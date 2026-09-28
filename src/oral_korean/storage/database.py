@@ -12,7 +12,9 @@ another database would rewrite one package and no caller.
 - **Default rollback journal, not WAL**: the file sits on a Docker Desktop bind mount from a
   Windows host, where WAL's shared-memory file is not reliable.
 - **Numbered migrations.** `MIGRATIONS[n - 1]` takes a file from version `n - 1` to `n`, and
-  the file's version is SQLite's `user_version`. Each pending migration runs in its own
+  the file's version is SQLite's `user_version`. A migration is a SQL script, or a Python
+  step called with the open connection when SQL alone cannot say it (migration 3 replays
+  history through FSRS). Each pending migration runs in its own
   transaction together with the version bump, so a migration that fails halfway leaves both
   the schema and the version as they were. `executescript()` would commit an open transaction
   first under the legacy transaction control, so connections are opened in autocommit mode and
@@ -27,10 +29,17 @@ appending a migration.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
+
+from oral_korean.srs.memory import Grade, MemoryState, apply_grade
+
+type Migration = str | Callable[[sqlite3.Connection], None]
+"""A SQL script, or a Python step run on the open connection, inside the migration's
+transaction."""
 
 _MIGRATION_1: Final = """
 CREATE TABLE words (
@@ -98,7 +107,111 @@ Set together on an answered review, so the direction can be analysed later (one 
 per word, whatever the direction).
 """
 
-MIGRATIONS: Final[tuple[str, ...]] = (_MIGRATION_1, _MIGRATION_2)
+_DIRECTIONS: Final = (
+    "hangul_to_translation",
+    "translation_to_hangul",
+    "voice_to_hangul",
+    "voice_to_translation",
+)
+"""The four directions' wire values, as migration 3 wrote them. Spelled out rather than read
+from `exercises.vocab_words.Direction`: a shipped migration must not change when the code does.
+"""
+
+
+def _migration_3(connection: sqlite3.Connection) -> None:
+    """One FSRS memory per word and direction (vocab-directions T01), rebuilt from history.
+
+    Each word's `reviews` rows are replayed in `reviewed_at, id` order. A seed gives all four
+    directions its recorded stability, difficulty and next review, last reviewed at the seed,
+    with both counts at 0. An answer is graded into its own direction's memory with
+    `apply_grade`, fuzzing off so the replay is reproducible: a rebuilt due date can differ by
+    a day or two from the fuzzed one the user saw. An answer with no direction goes into all
+    four. A direction with neither has no row.
+
+    `reviews` is left as it was: an old row's figures are the word-level ones recorded then.
+    The six memory columns on `words` stay, since dropping them would rebuild the table under
+    its CHECK constraint, and from here on nothing reads or writes them.
+    """
+    connection.execute("""
+        CREATE TABLE direction_memories (
+            word_id INTEGER NOT NULL REFERENCES words (id) ON DELETE CASCADE,
+            direction TEXT NOT NULL,
+            stability REAL NOT NULL,
+            difficulty REAL NOT NULL,
+            next_review TEXT NOT NULL,
+            last_review TEXT NOT NULL,
+            review_count INTEGER NOT NULL,
+            lapse_count INTEGER NOT NULL,
+            PRIMARY KEY (word_id, direction)
+        )
+    """)
+    memories: dict[int, dict[str, MemoryState]] = {}
+    rows = connection.execute(
+        "SELECT word_id, reviewed_at, grade, is_seed, stability, difficulty, next_review, "
+        "direction FROM reviews ORDER BY word_id, reviewed_at, id"
+    )
+    for word_id, reviewed_at, grade, is_seed, stability, difficulty, next_review, direction in rows:
+        states = memories.setdefault(word_id, {})
+        at = _instant(reviewed_at)
+        targets = _DIRECTIONS if direction is None else (direction,)
+        for target in targets:
+            if is_seed:
+                states[target] = MemoryState(
+                    stability=stability, difficulty=difficulty,
+                    next_review=_instant(next_review), last_review=at,
+                    review_count=0, lapse_count=0,
+                )
+            else:
+                states[target], _ = apply_grade(
+                    states.get(target), Grade(grade), at, fuzzing=False
+                )
+    connection.executemany(
+        "INSERT INTO direction_memories (word_id, direction, stability, difficulty, "
+        "next_review, last_review, review_count, lapse_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (
+                word_id, direction, state.stability, state.difficulty,
+                _text(state.next_review), _text(state.last_review),
+                state.review_count, state.lapse_count,
+            )
+            for word_id, states in memories.items()
+            for direction, state in states.items()
+        ],
+    )
+
+
+def _instant(text: str) -> datetime:
+    """A stored instant, in UTC."""
+    return datetime.fromisoformat(text).astimezone(UTC)
+
+
+def _text(at: datetime) -> str:
+    """An instant in the stored format: ISO-8601 UTC with microseconds."""
+    return at.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+_MIGRATION_4: Final = """
+CREATE TABLE learn_queue (
+    word_id INTEGER PRIMARY KEY REFERENCES words (id) ON DELETE CASCADE,
+    position INTEGER NOT NULL
+);
+
+INSERT INTO learn_queue (word_id, position)
+SELECT id, ROW_NUMBER() OVER (ORDER BY added_at, id) FROM words;
+"""
+"""The learn queue the user orders (vocab-directions T03): every word's place, lowest first.
+
+Filled in the order learn sessions took words until then, oldest first, so nothing moves on
+migration. Every word has a place, learned or not: only the queue's readers skip the words
+with nothing left to learn.
+"""
+
+MIGRATIONS: Final[tuple[Migration, ...]] = (
+    _MIGRATION_1,
+    _MIGRATION_2,
+    _migration_3,
+    _MIGRATION_4,
+)
 """Every migration, in order. Append-only once shipped: see the module docstring."""
 
 
@@ -109,7 +222,7 @@ class SchemaVersionError(RuntimeError):
 class Database:
     """One SQLite file, opened afresh for every unit of work."""
 
-    def __init__(self, path: Path, *, migrations: Sequence[str] = MIGRATIONS) -> None:
+    def __init__(self, path: Path, *, migrations: Sequence[Migration] = MIGRATIONS) -> None:
         self._path = path
         self._migrations = tuple(migrations)
         self._migrated = False
@@ -162,7 +275,11 @@ class Database:
                     )
                 if current == latest:
                     return
-                connection.executescript(self._migrations[current])
+                migration = self._migrations[current]
+                if isinstance(migration, str):
+                    connection.executescript(migration)
+                else:
+                    migration(connection)
                 connection.execute(f"PRAGMA user_version = {current + 1}")
 
 

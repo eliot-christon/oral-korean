@@ -15,11 +15,19 @@ answering and scoring. The routes, all under `/api/vocab`:
   "progress"}`; a **question** `{"type", "item_id", "direction", "mode", "prompt",
   "audio_url", "options", "scored", "progress"}` (`prompt` null for a voice direction,
   `audio_url` null for a written one, `options` null for typing); or the **end**
-  `{"type": "end", "summary": {"words": [{"korean", "translations", "correct"}],
-  "word_count", "correct_count"}}`, after which the session is gone (`404`). `progress` is
-  `{"done", "total"}`: words whose scored question is answered, out of the session's words.
-  A pending question is handed out again, same id, until it is answered. `502` with the
-  fixed detail of `api/audio.py` when synthesis fails, nothing stored, place kept.
+  `{"type": "end", "summary": {"words": [{"korean", "translations", "correct",
+  "directions": [{"direction", "correct"}]}], "word_count", "correct_count",
+  "question_count", "correct_question_count"}}`, after which the session is gone (`404`).
+  `progress` is `{"done", "total", "questions_done", "question_total"}`: words whose every
+  scored question is answered out of the session's words, then scored questions answered out
+  of the session's scored questions. It never names a word. A pending question is handed out
+  again, same id, until it is answered. `502` with the fixed detail of `api/audio.py` when
+  synthesis fails, nothing stored, place kept.
+- Since vocab-directions T02 a word is asked in every direction `directions_to_ask` picks
+  (learn: the ticked ones it has no memory in; review: the ticked ones due), spread among the
+  other words' questions and shuffled with a fresh random source per session. No app seam
+  fixes that source, so no test here depends on the order of the words: they identify a
+  question's word from its prompt, or assert on sets and counts.
 - `GET /items/{item_id}/audio` -> `200 audio/wav` for a presentation or a voice question;
   `404` for an unknown or answered item, or a written question. A voice question's
   `audio_url` is exactly this path.
@@ -40,6 +48,7 @@ are neither new nor due. The leak checks use the numbers suite's `leaks`, moved 
 from __future__ import annotations
 
 import threading
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
@@ -110,7 +119,19 @@ QUESTION_KEYS: Final = {
     "scored",
     "progress",
 }
+PROGRESS_KEYS: Final = {"done", "total", "questions_done", "question_total"}
+SUMMARY_KEYS: Final = {
+    "words",
+    "word_count",
+    "correct_count",
+    "question_count",
+    "correct_question_count",
+}
+SUMMARY_WORD_KEYS: Final = {"korean", "translations", "correct", "directions"}
+DIRECTION_RESULT_KEYS: Final = {"direction", "correct"}
 SYNTHESIS_FAILURE_DETAIL: Final = "Could not synthesise audio for this question."
+PEAR: Final = ("배", "pear")
+"""The second word of the multi-word tests: its Korean and its one translation."""
 
 NEW_WORDS: Final = (
     ("사과", "apple"),
@@ -136,6 +157,30 @@ def without_options(question: Json) -> Json:
     return {key: value for key, value in question.items() if key != "options"}
 
 
+def progress(done: int, total: int, questions_done: int, question_total: int) -> Json:
+    return {
+        "done": done,
+        "total": total,
+        "questions_done": questions_done,
+        "question_total": question_total,
+    }
+
+
+def right_for(question: Json, korean: str, translation: str) -> Mapping[str, object]:
+    """The right answer to `question` about the word `korean` / `translation`, typed or
+    tapped, whichever mode the question came in."""
+    text = korean if question["direction"] in HANGUL_ANSWERED else translation
+    if question["options"] is None:
+        return {"answer": text}
+    return {"choice": option_index(question, text)}
+
+
+def owner(question: Json) -> str:
+    """Which of the target and 배 a written question is about, read off its prompt."""
+    prompt: str = question["prompt"]
+    return KOREAN if prompt == KOREAN or TRANSLATIONS[0] in prompt else PEAR[0]
+
+
 # ---------------------------------------------------------------------------------
 # Starting a session
 # ---------------------------------------------------------------------------------
@@ -158,7 +203,13 @@ def test_learn_with_the_default_size_takes_the_five_oldest_new_words(
     assert body["word_count"] == 5
     assert sorted(body["directions"]) == sorted(ALL_DIRECTIONS)
     items = walk(harness.client, body["session_id"], DONT_KNOW)
-    assert presented(items) == [korean for korean, _ in NEW_WORDS[:5]]
+    assert sorted(presented(items)) == sorted(korean for korean, _ in NEW_WORDS[:5])
+    scored = [item for item in items if item["type"] == "question" and item["scored"]]
+    assert len(scored) == 5 * 4  # a new word is learned in every ticked direction
+    assert sorted(item["direction"] for item in scored) == sorted(ALL_DIRECTIONS * 5)
+    for position, item in enumerate(items):
+        if item["type"] == "presentation":
+            assert items[position + 1]["type"] == "question"
 
 
 def test_learn_with_a_tag_takes_only_its_new_words_and_never_a_seeded_one(
@@ -175,7 +226,7 @@ def test_learn_with_a_tag_takes_only_its_new_words_and_never_a_seeded_one(
     assert response.status_code == 201
     assert response.json()["word_count"] == 2
     items = walk(client, response.json()["session_id"], DONT_KNOW)
-    assert presented(items) == ["사과", "감"]
+    assert sorted(presented(items)) == sorted(["사과", "감"])
 
 
 def test_a_word_seeded_very_well_is_due_for_review_only_from_its_next_review(
@@ -342,7 +393,7 @@ def test_a_learn_session_presents_the_word_then_asks_it_by_choice(
     assert presentation["type"] == "presentation"
     assert presentation["korean"] == KOREAN
     assert presentation["translations"] == TRANSLATIONS
-    assert presentation["progress"] == {"done": 0, "total": 1}
+    assert presentation["progress"] == progress(0, 1, 0, 1)
     assert presentation["audio_url"] == audio_path(presentation["item_id"])
     assert audio.status_code == 200
     assert audio.headers["content-type"] == "audio/wav"
@@ -400,9 +451,18 @@ def test_after_the_last_answer_next_is_the_end_and_the_session_is_dropped(
     assert end == {
         "type": "end",
         "summary": {
-            "words": [{"korean": KOREAN, "translations": TRANSLATIONS, "correct": True}],
+            "words": [
+                {
+                    "korean": KOREAN,
+                    "translations": TRANSLATIONS,
+                    "correct": True,
+                    "directions": [{"direction": T2H, "correct": True}],
+                }
+            ],
             "word_count": 1,
             "correct_count": 1,
+            "question_count": 1,
+            "correct_question_count": 1,
         },
     }
     assert harness.client.post(next_path(asked.session_id)).status_code == 404
@@ -412,17 +472,21 @@ def test_after_the_last_answer_next_is_the_end_and_the_session_is_dropped(
 def test_the_summary_reports_first_attempts_and_practice_comes_last(
     harness: NumbersHarness,
 ) -> None:
-    """Most overdue first (a tie broken by id), a missed word's practice at the end."""
+    """The target missed, 배 right, whichever came first; the target's practice at the end. The
+    summary lists the words in the order the store picked them, most overdue first (a tie
+    broken by id), not in the shuffled order they were asked in."""
     client = harness.client
     add_target(client, familiarity="well")
-    add_word(client, "배", "pear", familiarity="well")
+    add_word(client, *PEAR, familiarity="well")
     move_to_well_due_date(harness)
     session_id = started(client, "review", directions=[T2H])
 
-    first = next_item(client, session_id)
-    answered(client, first["item_id"], {"answer": "감"})
-    second = next_item(client, session_id)
-    answered(client, second["item_id"], {"answer": "배"})
+    scored = []
+    for _ in range(2):
+        question = next_item(client, session_id)
+        scored.append(question)
+        answer_text = "감" if owner(question) == KOREAN else PEAR[0]
+        answered(client, question["item_id"], {"answer": answer_text})
     practice = next_item(client, session_id)
     # After the lapse the word is weak again, so its practice is asked by choice.
     practice_answer = (
@@ -431,16 +495,28 @@ def test_the_summary_reports_first_attempts_and_practice_comes_last(
     answered(client, practice["item_id"], practice_answer)
     end = next_item(client, session_id)
 
-    assert ("apple" in first["prompt"], first["scored"]) == (True, True)
-    assert ("pear" in second["prompt"], second["scored"]) == (True, True)
-    assert ("apple" in practice["prompt"], practice["scored"]) == (True, False)
+    assert sorted(owner(question) for question in scored) == sorted([KOREAN, PEAR[0]])
+    assert all(question["scored"] for question in scored)
+    assert (owner(practice), practice["scored"]) == (KOREAN, False)
     assert end["summary"] == {
         "words": [
-            {"korean": KOREAN, "translations": TRANSLATIONS, "correct": False},
-            {"korean": "배", "translations": ["pear"], "correct": True},
+            {
+                "korean": KOREAN,
+                "translations": TRANSLATIONS,
+                "correct": False,
+                "directions": [{"direction": T2H, "correct": False}],
+            },
+            {
+                "korean": PEAR[0],
+                "translations": [PEAR[1]],
+                "correct": True,
+                "directions": [{"direction": T2H, "correct": True}],
+            },
         ],
         "word_count": 2,
         "correct_count": 1,
+        "question_count": 2,
+        "correct_question_count": 1,
     }
 
 
@@ -466,13 +542,152 @@ def test_progress_counts_the_words_whose_scored_question_is_answered(
             missed = item["prompt"] == KOREAN and item["scored"]
             answered(client, item["item_id"], {"choice": wrong if missed else right})
 
+    # Whichever word comes first: one direction each, so the shape does not depend on it.
     assert seen == [
-        ("presentation", {"done": 0, "total": 2}),
-        ("question", {"done": 0, "total": 2}),
-        ("presentation", {"done": 1, "total": 2}),
-        ("question", {"done": 1, "total": 2}),
-        ("question", {"done": 2, "total": 2}),
+        ("presentation", progress(0, 2, 0, 2)),
+        ("question", progress(0, 2, 0, 2)),
+        ("presentation", progress(1, 2, 1, 2)),
+        ("question", progress(1, 2, 1, 2)),
+        ("question", progress(2, 2, 2, 2)),
     ]
+
+
+# ---------------------------------------------------------------------------------
+# A word asked in several directions (vocab-directions T02)
+# ---------------------------------------------------------------------------------
+
+
+def walk_answering(client: TestClient, session_id: str, words: dict[str, str]) -> list[Json]:
+    """Every item up to and including the end, each question answered right: `words` maps
+    each Korean in the session to its translation, and a voice question must be about the
+    only word listed under the key `"voice"`."""
+
+    def right(item: Json) -> Mapping[str, object]:
+        korean = words["voice"] if item["prompt"] is None else owner(item)
+        return right_for(item, korean, words[korean])
+
+    return walk(client, session_id, right)
+
+
+def test_a_word_due_in_two_directions_is_asked_in_both_and_done_after_the_second(
+    harness: NumbersHarness,
+) -> None:
+    """The target is reviewed by voice first, so only its two written directions stay due;
+    배 is due in all four. A review with everything ticked asks the target twice and 배 four
+    times, and the target counts as done only once both its questions are answered."""
+    client = harness.client
+    add_word(client, KOREAN, "; ".join(TRANSLATIONS), tags=["target"], familiarity="well")
+    add_word(client, *PEAR, tags=["other"], familiarity="well")
+    move_to_well_due_date(harness)
+    by_voice = started(client, "review", tag="target", directions=[V2H, V2T])
+    walk_answering(client, by_voice, {KOREAN: TRANSLATIONS[0], "voice": KOREAN})
+
+    start = start_session(client, "review")
+    assert start.status_code == 201, start.text
+    assert start.json()["word_count"] == 2
+    session_id = start.json()["session_id"]
+    seen: list[tuple[str, str, Json]] = []
+    for _ in range(MAX_ITEMS):
+        question = next_item(client, session_id)
+        if question["type"] == "end":
+            break
+        assert question["scored"] is True  # every answer right: no practice
+        word = PEAR[0] if question["prompt"] is None else owner(question)
+        seen.append((word, question["direction"], question["progress"]))
+        translation = TRANSLATIONS[0] if word == KOREAN else PEAR[1]
+        answered(client, question["item_id"], right_for(question, word, translation))
+
+    asked = {word: sorted(d for w, d, _ in seen if w == word) for word in (KOREAN, PEAR[0])}
+    assert asked == {KOREAN: sorted([H2T, T2H]), PEAR[0]: sorted(ALL_DIRECTIONS)}
+    target_answered = 0
+    pear_answered = 0
+    for word, _, shown in seen:
+        done = (target_answered == 2) + (pear_answered == 4)
+        assert shown == progress(done, 2, target_answered + pear_answered, 6), seen
+        target_answered += word == KOREAN
+        pear_answered += word == PEAR[0]
+    # 배 has the most questions, so it is asked last: the target's being done is shown on 배's
+    # remaining questions, not lost behind the end.
+    assert any(shown["done"] == 1 for _, _, shown in seen)
+
+
+def test_the_end_summary_reports_each_directions_result_and_the_totals_add_up(
+    harness: NumbersHarness,
+) -> None:
+    """The target missed in hangul-to-translation, right the other way; 배 right both ways."""
+    client = harness.client
+    add_target(client, familiarity="well")
+    add_word(client, *PEAR, familiarity="well")
+    move_to_well_due_date(harness)
+    session_id = started(client, "review", directions=[T2H, H2T])
+
+    def answer(item: Json) -> Mapping[str, object]:
+        word = owner(item)
+        translation = TRANSLATIONS[0] if word == KOREAN else PEAR[1]
+        missed = item["scored"] and word == KOREAN and item["direction"] == H2T
+        return {"answer": "감"} if missed else right_for(item, word, translation)
+
+    items = walk(client, session_id, answer)
+    summary = items[-1]["summary"]
+
+    assert set(summary) == SUMMARY_KEYS
+    assert summary["words"] == [
+        {
+            "korean": KOREAN,
+            "translations": TRANSLATIONS,
+            "correct": False,
+            "directions": [
+                {"direction": H2T, "correct": False},
+                {"direction": T2H, "correct": True},
+            ],
+        },
+        {
+            "korean": PEAR[0],
+            "translations": [PEAR[1]],
+            "correct": True,
+            "directions": [
+                {"direction": H2T, "correct": True},
+                {"direction": T2H, "correct": True},
+            ],
+        },
+    ]
+    for word in summary["words"]:
+        assert set(word) == SUMMARY_WORD_KEYS
+        assert all(set(result) == DIRECTION_RESULT_KEYS for result in word["directions"])
+    results = [result for word in summary["words"] for result in word["directions"]]
+    assert (summary["word_count"], summary["correct_count"]) == (2, 1)
+    assert summary["question_count"] == len(results) == 4
+    assert summary["correct_question_count"] == sum(r["correct"] for r in results) == 3
+    scored = [item for item in items if item["type"] == "question" and item["scored"]]
+    assert len(scored) == summary["question_count"]
+
+
+def test_every_question_of_a_four_direction_review_keeps_the_answer_back(
+    harness: NumbersHarness,
+) -> None:
+    """Four questions about one word in one session: each carries only its documented fields
+    and a progress of four counts, none names the word, and no voice question carries the
+    Korean it speaks."""
+    client = harness.client
+    add_target(client, familiarity="well")
+    move_to_well_due_date(harness)
+    session_id = started(client, "review")
+
+    items = walk_answering(client, session_id, {KOREAN: TRANSLATIONS[0], "voice": KOREAN})
+    questions = [item for item in items if item["type"] == "question"]
+
+    assert sorted(question["direction"] for question in questions) == sorted(ALL_DIRECTIONS)
+    for question in questions:
+        assert set(question) == QUESTION_KEYS
+        assert set(question["progress"]) == PROGRESS_KEYS
+        assert all(isinstance(count, int) for count in question["progress"].values())
+        assert question["progress"]["question_total"] == 4
+        answer_side = [KOREAN] if question["direction"] in HANGUL_ANSWERED else TRANSLATIONS
+        for needle in answer_side:
+            assert not leaks(question, question["item_id"], needle), question
+        if question["direction"] in VOICE_DIRECTIONS:
+            assert question["prompt"] is None
+            assert not leaks(question, question["item_id"], KOREAN), question
 
 
 # ---------------------------------------------------------------------------------
@@ -492,7 +707,8 @@ def test_a_question_carries_exactly_the_documented_fields(
     assert question["direction"] == direction
     assert question["mode"] == mode
     assert question["scored"] is True
-    assert question["progress"] == {"done": 0, "total": 1}
+    assert set(question["progress"]) == PROGRESS_KEYS
+    assert question["progress"] == progress(0, 1, 0, 1)
     if direction in VOICE_DIRECTIONS:
         assert question["prompt"] is None
         assert question["audio_url"] == audio_path(question["item_id"])
@@ -624,7 +840,7 @@ def test_a_synthesis_failure_is_a_text_free_502_and_the_session_keeps_its_place(
     client = harness.client
     add_target(client, familiarity="well")
     harness.clock.advance(timedelta(hours=1))
-    add_word(client, "배", "pear", familiarity="well")
+    add_word(client, *PEAR, familiarity="well")
     move_to_well_due_date(harness)
     session_id = started(client, "review", directions=[V2T])
 
@@ -632,14 +848,17 @@ def test_a_synthesis_failure_is_a_text_free_502_and_the_session_keeps_its_place(
 
     assert failed.status_code == 502
     assert failed.json()["detail"] == SYNTHESIS_FAILURE_DETAIL
-    for needle in [KOREAN, *TRANSLATIONS, "배", "pear"]:
+    for needle in [KOREAN, *TRANSLATIONS, *PEAR]:
         assert needle not in failed.text
     assert pending_items(harness) == 0
     engine.error = None
     question = next_item(client, session_id)
-    assert question["progress"] == {"done": 0, "total": 2}
-    assert engine.calls[-1].text == engine.calls[0].text == KOREAN
-    assert answered(client, question["item_id"], {"answer": "apple"})["korean"] == KOREAN
+    assert question["progress"] == progress(0, 2, 0, 2)
+    # The shuffle picks which word comes first; the retry asks that same word again.
+    kept = engine.calls[0].text
+    assert kept in (KOREAN, PEAR[0])
+    assert engine.calls[-1].text == kept
+    assert answered(client, question["item_id"], {"answer": "apple"})["korean"] == kept
 
 
 def test_a_synthesis_failure_on_a_presentation_keeps_it_too(tmp_path: Path) -> None:

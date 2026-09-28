@@ -20,6 +20,8 @@ Written before the implementation; the session routes and the helpers are docume
   gain `direction`, `mode` and `correct`, null for a seed.
 - A question is a snapshot: a word edited while its question is pending is judged against
   the text it was asked with.
+- Since vocab-directions T02 a session asks a word in several directions: each (word,
+  direction) is scored exactly once, into that direction's memory, with one history row.
 
 Expected FSRS figures come from `srs/` with fuzzing off, never re-derived: the routes fuzz,
 so stabilities are compared everywhere and dates only for a first delay of a day, which FSRS
@@ -33,12 +35,13 @@ import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Final
 
 import pytest
 from conftest import (
+    ALL_DIRECTIONS,
     DONT_KNOW,
     H2T,
     HARNESS_START,
@@ -48,6 +51,7 @@ from conftest import (
     V2H,
     V2T,
     WORDS,
+    Json,
     NumbersHarness,
     add_distractors,
     add_target,
@@ -59,12 +63,14 @@ from conftest import (
     build_numbers_harness,
     correct_option,
     instant,
+    move_to_well_due_date,
     next_item,
     next_path,
     pending_items,
     right_choice,
     right_typed,
     seeded_well,
+    start_session,
     started,
     walk,
     word_detail,
@@ -72,7 +78,8 @@ from conftest import (
 )
 from httpx import Response
 
-from oral_korean.srs.memory import Grade, apply_grade
+from oral_korean.exercises.vocab import TYPING_STABILITY_DAYS
+from oral_korean.srs.memory import Grade, aggregate_statistics, apply_grade
 
 T0: Final = HARNESS_START
 
@@ -110,11 +117,11 @@ def test_a_new_word_answered_right_by_choice_is_scored_hard(harness: NumbersHarn
     assert (verdict["correct"], verdict["scored"]) == (True, True)
     assert (verdict["korean"], verdict["translations"]) == (KOREAN, TRANSLATIONS)
     assert verdict["correct_option"] == correct_option(asked.question)
-    assert verdict["statistics_before"] == before["statistics"]
-    assert verdict["statistics_after"] == after["statistics"]
-    assert after["statistics"]["review_count"] == 1
-    assert after["statistics"]["stability"] == expected.stability
-    assert instant(after["statistics"]["next_review"]) == expected.next_review
+    assert verdict["statistics_before"] == before["direction_statistics"][H2T]
+    assert verdict["statistics_after"] == after["direction_statistics"][H2T]
+    assert after["direction_statistics"][H2T]["review_count"] == 1
+    assert after["direction_statistics"][H2T]["stability"] == expected.stability
+    assert instant(after["direction_statistics"][H2T]["next_review"]) == expected.next_review
     newest = after["history"][-1]
     assert (newest["grade"], newest["is_seed"]) == ("hard", False)
     assert (newest["direction"], newest["mode"], newest["correct"]) == (H2T, "choice", True)
@@ -136,7 +143,7 @@ def test_a_wrong_choice_records_again_and_its_practice_question_is_not_scored(
     practice_verdict = answered(client, practice["item_id"], practice_answer)
 
     assert (verdict["correct"], verdict["scored"]) == (False, True)
-    assert after_miss["statistics"]["stability"] == expected.stability
+    assert after_miss["direction_statistics"][H2T]["stability"] == expected.stability
     assert [(row["grade"], row["correct"]) for row in after_miss["history"]] == [
         ("again", False)
     ]
@@ -144,8 +151,8 @@ def test_a_wrong_choice_records_again_and_its_practice_question_is_not_scored(
     assert practice["item_id"] != asked.item_id
     assert (practice["prompt"], practice["scored"]) == (KOREAN, False)
     assert (practice_verdict["correct"], practice_verdict["scored"]) == (True, False)
-    assert practice_verdict["statistics_before"] == after_miss["statistics"]
-    assert practice_verdict["statistics_after"] == after_miss["statistics"]
+    assert practice_verdict["statistics_before"] == after_miss["direction_statistics"][H2T]
+    assert practice_verdict["statistics_after"] == after_miss["direction_statistics"][H2T]
     assert word_detail(client, asked.word_id) == after_miss
 
 
@@ -161,11 +168,12 @@ def test_a_word_known_well_is_typed_at_its_due_date_and_a_right_answer_records_g
     verdict = answered(harness.client, asked.item_id, {"answer": KOREAN})
 
     after = word_detail(harness.client, asked.word_id)
+    own = after["direction_statistics"][T2H]
     assert (verdict["correct"], verdict["scored"]) == (True, True)
     assert verdict["correct_option"] is None
-    assert after["statistics"]["stability"] == good.stability
-    assert after["statistics"]["stability"] > hard.stability
-    assert after["statistics"]["review_count"] == 1
+    assert own["stability"] == good.stability
+    assert own["stability"] > hard.stability
+    assert own["review_count"] == 1
     newest = after["history"][-1]
     assert newest["grade"] == "good"
     assert (newest["direction"], newest["mode"], newest["correct"]) == (T2H, "typing", True)
@@ -199,8 +207,8 @@ def test_a_wrong_typed_answer_records_again_as_a_lapse(harness: NumbersHarness) 
 
     after = word_detail(harness.client, asked.word_id)
     assert (verdict["correct"], verdict["scored"]) == (False, True)
-    assert after["statistics"]["stability"] == expected.stability
-    assert after["statistics"]["lapse_count"] == 1
+    assert after["direction_statistics"][H2T]["stability"] == expected.stability
+    assert after["direction_statistics"][H2T]["lapse_count"] == 1
     newest = after["history"][-1]
     assert newest["grade"] == "again"
     assert (newest["direction"], newest["mode"], newest["correct"]) == (H2T, "typing", False)
@@ -413,16 +421,211 @@ def test_the_verdict_carries_the_word_and_its_statistics_before_and_after(
     harness: NumbersHarness, typed: str
 ) -> None:
     asked = ask_by_typing(harness, T2H)
-    before = word_detail(harness.client, asked.word_id)["statistics"]
+    before = word_detail(harness.client, asked.word_id)["direction_statistics"][T2H]
 
     verdict = answered(harness.client, asked.item_id, {"answer": typed})
 
     assert (verdict["korean"], verdict["translations"]) == (KOREAN, TRANSLATIONS)
     assert verdict["statistics_before"] == before
     after = verdict["statistics_after"]
-    assert after == word_detail(harness.client, asked.word_id)["statistics"]
+    assert after == word_detail(harness.client, asked.word_id)["direction_statistics"][T2H]
     assert (before["review_count"], after["review_count"]) == (0, 1)
     assert instant(after["next_review"]) > instant(before["next_review"])
+
+
+@pytest.mark.parametrize(
+    ("direction", "mode"),
+    [
+        pytest.param(T2H, "typing", id="translation-to-hangul-typed"),
+        pytest.param(V2T, "choice", id="voice-to-translation-tapped"),
+    ],
+)
+def test_an_answer_moves_its_own_directions_statistics_and_no_other(
+    harness: NumbersHarness, direction: str, mode: str
+) -> None:
+    """The verdict's before and after are the answered direction's own statistics, and the
+    detail read afterwards shows the other three directions exactly as they were."""
+    asked = ask(harness, direction, mode)
+    before = word_detail(harness.client, asked.word_id)["direction_statistics"]
+    body = right_typed(direction) if mode == "typing" else right_choice(asked.question)
+
+    verdict = answered(harness.client, asked.item_id, body)
+
+    after = word_detail(harness.client, asked.word_id)["direction_statistics"]
+    assert verdict["statistics_before"] == before[direction]
+    assert verdict["statistics_after"] == after[direction]
+    assert verdict["statistics_after"] != verdict["statistics_before"]
+    assert after[direction]["review_count"] == before[direction]["review_count"] + 1
+    for other in ALL_DIRECTIONS:
+        if other != direction:
+            assert after[other] == before[other], other
+
+
+# ---------------------------------------------------------------------------------
+# One memory per direction (vocab-directions T01)
+# ---------------------------------------------------------------------------------
+
+
+def test_a_new_word_answered_one_way_has_a_headline_of_a_quarter_of_that_way(
+    harness: NumbersHarness,
+) -> None:
+    """The headline is the aggregate of the four directions, three of them still without
+    memory: the mean strength counts them 0, the phase is no longer new, the per-memory
+    figures are null, and the three unanswered directions read as new."""
+    asked = ask_by_choice(harness, H2T)
+    expected, _ = apply_grade(None, Grade.HARD, T0, fuzzing=False)
+    aggregate = aggregate_statistics([expected, None, None, None], T0)
+
+    answered(harness.client, asked.item_id, right_choice(asked.question))
+
+    after = word_detail(harness.client, asked.word_id)
+    headline = after["statistics"]
+    assert headline["score"] == aggregate.score
+    assert headline["score"] < after["direction_statistics"][H2T]["score"]
+    assert headline["phase"] == "review"
+    assert (headline["recall"], headline["stability"], headline["difficulty"]) == (
+        None,
+        None,
+        None,
+    )
+    assert instant(headline["next_review"]) == expected.next_review
+    assert (headline["review_count"], headline["due"]) == (1, False)
+    for other in (T2H, V2H, V2T):
+        assert after["direction_statistics"][other]["phase"] == "new"
+
+
+def test_the_list_summary_counts_from_the_headline(harness: NumbersHarness) -> None:
+    """Answered one way, the word is no longer new; a day later, due that way, it is due."""
+    client = harness.client
+    asked = ask_by_choice(harness, H2T)
+    assert client.get(WORDS).json()["summary"]["new"] == 1  # the target; distractors are seeded
+
+    answered(client, asked.item_id, right_choice(asked.question))
+    today = client.get(WORDS).json()["summary"]
+    harness.clock.advance(timedelta(days=1))
+    tomorrow = client.get(WORDS).json()["summary"]
+
+    assert (today["total"], today["new"], today["due"]) == (4, 0, 0)
+    assert (tomorrow["new"], tomorrow["due"]) == (0, 1)
+
+
+def test_each_direction_is_asked_in_the_mode_its_own_memory_calls_for(
+    harness: NumbersHarness,
+) -> None:
+    """Seeded `a_little` (1.3 days everywhere), then right by choice in hangul-to-translation
+    on its due date: that direction passes the typing threshold, the others stay under it.
+    Once everything is due again, hangul-to-translation is typed and translation-to-Hangul is
+    still tapped."""
+    client = harness.client
+    word_id = add_target(client, familiarity="a_little")
+    add_distractors(client)
+    harness.clock.advance(timedelta(days=1))  # the `a_little` seed's unfuzzed one-day delay
+    first = next_item(client, started(client, "review", directions=[H2T], size=1))
+    assert first["mode"] == "choice"
+    answered(client, first["item_id"], right_choice(first))
+    memories = word_detail(client, word_id)["direction_statistics"]
+    assert memories[H2T]["stability"] >= TYPING_STABILITY_DAYS > memories[T2H]["stability"]
+    due_again = instant(memories[H2T]["next_review"])
+    harness.clock.advance(due_again - harness.clock.now)
+
+    typed = next_item(client, started(client, "review", directions=[H2T], size=1))
+    tapped = next_item(client, started(client, "review", directions=[T2H], size=1))
+
+    assert (typed["prompt"], typed["mode"], typed["options"]) == (KOREAN, "typing", None)
+    assert (tapped["prompt"], tapped["mode"]) == ("; ".join(TRANSLATIONS), "choice")
+
+
+def test_learn_takes_a_word_while_a_ticked_direction_has_no_memory(
+    harness: NumbersHarness,
+) -> None:
+    """Learned in hangul-to-translation, the word is nothing more to learn that way, and still
+    to learn in any direction it has never been asked in."""
+    client = harness.client
+    asked = ask_by_choice(harness, H2T)
+    answered(client, asked.item_id, right_choice(asked.question))
+
+    again = start_session(client, "learn", directions=[H2T])
+    elsewhere = start_session(client, "learn", directions=[T2H, V2H])
+
+    assert again.status_code == 409
+    assert elsewhere.status_code == 201
+    assert elsewhere.json()["word_count"] == 1
+
+
+def test_review_takes_a_word_only_through_a_ticked_direction_that_is_due(
+    harness: NumbersHarness,
+) -> None:
+    """A day after its first answer the word is due in hangul-to-translation alone: a review
+    of translation-to-Hangul has nothing to ask, one of hangul-to-translation asks it."""
+    client = harness.client
+    asked = ask_by_choice(harness, H2T)
+    answered(client, asked.item_id, right_choice(asked.question))
+    harness.clock.advance(timedelta(days=1))
+
+    elsewhere = start_session(client, "review", directions=[T2H])
+    there = start_session(client, "review", directions=[H2T])
+
+    assert elsewhere.status_code == 409
+    assert there.status_code == 201
+    assert there.json()["word_count"] == 1
+
+
+# ---------------------------------------------------------------------------------
+# Scored once per word and direction (vocab-directions T02)
+# ---------------------------------------------------------------------------------
+
+
+def answer_rows(harness: NumbersHarness, word_id: int) -> list[Json]:
+    """The word's history without its seed: one row per scored answer."""
+    return [row for row in word_detail(harness.client, word_id)["history"] if not row["is_seed"]]
+
+
+def test_a_scored_answer_writes_one_history_row_in_the_direction_asked(
+    harness: NumbersHarness,
+) -> None:
+    """A review over two directions, in an order the shuffle picks: each scored answer adds
+    exactly one row, in the direction of the question it answered, and moves only that
+    direction's memory."""
+    client = harness.client
+    word_id = add_target(client, familiarity="well")
+    move_to_well_due_date(harness)
+    session_id = started(client, "review", directions=[H2T, V2T])
+
+    first = next_item(client, session_id)
+    answered(client, first["item_id"], right_typed(first["direction"]))
+    after_first = answer_rows(harness, word_id)
+    statistics = word_detail(client, word_id)["direction_statistics"]
+    second = next_item(client, session_id)
+    answered(client, second["item_id"], right_typed(second["direction"]))
+
+    assert {first["direction"], second["direction"]} == {H2T, V2T}
+    assert [row["direction"] for row in after_first] == [first["direction"]]
+    assert statistics[first["direction"]]["review_count"] == 1
+    assert statistics[second["direction"]]["review_count"] == 0
+    rows = answer_rows(harness, word_id)
+    assert [row["direction"] for row in rows] == [first["direction"], second["direction"]]
+    assert next_item(client, session_id)["type"] == "end"
+
+
+def test_a_word_missed_in_every_direction_is_scored_once_per_direction(
+    harness: NumbersHarness,
+) -> None:
+    """Two directions, "I don't know" throughout: two scored answers, four practice ones, and
+    FSRS sees the two scored ones alone."""
+    word_id = add_target(harness.client)
+    add_distractors(harness.client)
+    session_id = started(harness.client, "learn", directions=[H2T, T2H])
+
+    items = walk(harness.client, session_id, DONT_KNOW)
+
+    questions = [item for item in items if item["type"] == "question"]
+    assert sum(question["scored"] for question in questions) == 2
+    assert sum(not question["scored"] for question in questions) == 4
+    summary = items[-1]["summary"]
+    assert (summary["question_count"], summary["correct_question_count"]) == (2, 0)
+    rows = answer_rows(harness, word_id)
+    assert sorted(row["direction"] for row in rows) == sorted([H2T, T2H])
+    assert all(row["grade"] == "again" for row in rows)
 
 
 def test_the_word_history_shows_the_answer_context_and_nulls_for_the_seed(
