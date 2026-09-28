@@ -3,6 +3,7 @@ import { useState, type ReactNode } from 'react'
 import { Badge } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
+import { ClockFace, type ClockValue } from '../components/ClockFace'
 import { Feedback } from '../components/Feedback'
 import { Field } from '../components/Field'
 import { ArrowDownIcon, BookIcon, KeypadIcon, LearnIcon, ReplayIcon, ReviewIcon } from '../components/icons'
@@ -50,9 +51,13 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
+const MINUTE_STEPS = [30, 5, 1]
+
 export function Preview() {
   // Remounting the feedback list replays its entrance animations.
   const [feedbackRun, setFeedbackRun] = useState(0)
+  const [clock, setClock] = useState<ClockValue>({ period: 'am', hour: 12, minute: 0 })
+  const [minuteStep, setMinuteStep] = useState(5)
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:py-12">
@@ -208,6 +213,28 @@ export function Preview() {
           <TextLink href="#words" className="self-start">
             Back to the words
           </TextLink>
+        </div>
+      </Section>
+
+      <Section title="Clock">
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-muted">
+            Drag either hand with a finger or the mouse, or focus a hand and use the arrow keys.
+            The minutes snap to the step chosen here.
+          </p>
+          <div role="group" aria-label="Minute step" className="flex flex-wrap gap-2">
+            {MINUTE_STEPS.map((step) => (
+              <Button
+                key={step}
+                variant={minuteStep === step ? 'secondary' : 'subtle'}
+                aria-pressed={minuteStep === step}
+                onClick={() => setMinuteStep(step)}
+              >
+                Every {step} min
+              </Button>
+            ))}
+          </div>
+          <ClockFace value={clock} minuteStep={minuteStep} onChange={setClock} />
         </div>
       </Section>
 
