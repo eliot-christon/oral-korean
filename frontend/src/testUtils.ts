@@ -52,6 +52,12 @@ export function wordStub(overrides: Record<string, unknown> = {}): Record<string
     familiarity: 'new',
     added_at: '2026-09-22T10:00:00Z',
     statistics: NEW_WORD_STATISTICS,
+    direction_statistics: {
+      hangul_to_translation: NEW_WORD_STATISTICS,
+      translation_to_hangul: NEW_WORD_STATISTICS,
+      voice_to_hangul: NEW_WORD_STATISTICS,
+      voice_to_translation: NEW_WORD_STATISTICS,
+    },
     ...overrides,
   }
 }

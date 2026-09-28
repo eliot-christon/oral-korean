@@ -8,6 +8,7 @@ import {
   fetchTags,
   fetchWords,
   startSession,
+  DIRECTIONS,
   type Direction,
   type Presentation,
   type Question,
@@ -23,19 +24,13 @@ import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Feedback } from '../components/Feedback'
 import { Field } from '../components/Field'
-import { CheckIcon, ReplayIcon } from '../components/icons'
+import { CheckIcon, CrossIcon, ReplayIcon } from '../components/icons'
 import { TextLink } from '../components/TextLink'
 import { directionLabel, formatDays, formatDue, formatScore } from '../format'
 import { isSubmitEnter, KOREAN_INPUT } from '../koreanInput'
 import { routeHref } from '../routes'
+import { LearnQueue, ReviewPicker } from './BatchList'
 import { PageLayout } from './PageLayout'
-
-const DIRECTIONS: Direction[] = [
-  'hangul_to_translation',
-  'translation_to_hangul',
-  'voice_to_hangul',
-  'voice_to_translation',
-]
 
 // A record, so a direction added to the union without its words here fails to compile.
 const DIRECTION_INSTRUCTIONS: Record<Direction, string> = {
@@ -44,6 +39,9 @@ const DIRECTION_INSTRUCTIONS: Record<Direction, string> = {
   voice_to_hangul: 'Listen, then write it in Korean.',
   voice_to_translation: 'Listen: what does it mean?',
 }
+
+/** How many words a session takes when the size is left empty: the backend's defaults. */
+const DEFAULT_SIZES: Record<SessionKind, number> = { learn: 5, review: 20 }
 
 const HEADINGS: Record<SessionKind, string> = {
   learn: 'Learn new words',
@@ -230,6 +228,9 @@ function StartForm({
   const [size, setSize] = useState('')
   const [starting, setStarting] = useState(false)
   const [refusal, setRefusal] = useState<{ message: string; nothingToDo: boolean } | null>(null)
+  // The review picker's chosen words, in order; null until its candidates are known, and
+  // then the session is started without them, as the backend picks the due words itself.
+  const [chosen, setChosen] = useState<number[] | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -282,6 +283,9 @@ function StartForm({
     if (size.trim() !== '') {
       params.size = Number(size)
     }
+    if (kind === 'review' && chosen !== null) {
+      params.word_ids = chosen
+    }
     setStarting(true)
     setRefusal(null)
     try {
@@ -297,6 +301,8 @@ function StartForm({
   }
 
   const busy = starting || loadingFirst
+  const nothingChosen = kind === 'review' && chosen !== null && chosen.length === 0
+  const batchSize = size.trim() === '' ? DEFAULT_SIZES[kind] : Number(size)
   const words = count === 1 ? 'word' : 'words'
   const countLine = count === null ? null : kind === 'learn' ? `${count} new ${words}` : `${count} ${words} due`
 
@@ -333,6 +339,11 @@ function StartForm({
         value={size}
         onChange={(event) => setSize(event.target.value)}
       />
+      {kind === 'learn' ? (
+        <LearnQueue tag={tag === '' ? null : tag} directions={directions} batchSize={batchSize} />
+      ) : (
+        <ReviewPicker tag={tag === '' ? null : tag} directions={directions} onSelection={setChosen} />
+      )}
       {refusal !== null && (
         <Feedback tone={refusal.nothingToDo ? 'warning' : 'error'} role="alert">
           {refusal.message}
@@ -343,7 +354,11 @@ function StartForm({
           Go to your words
         </TextLink>
       )}
-      <Button className="self-end" disabled={busy || directions.length === 0} onClick={() => void start()}>
+      <Button
+        className="self-end"
+        disabled={busy || directions.length === 0 || nothingChosen}
+        onClick={() => void start()}
+      >
         Start
       </Button>
     </Card>
@@ -351,11 +366,12 @@ function StartForm({
 }
 
 function ProgressLine({ item }: { item: Presentation | Question }) {
-  const { done, total } = item.progress
+  const { done, total, questions_done: questionsDone, question_total: questionTotal } = item.progress
   return (
     <div className="flex flex-wrap items-center justify-between gap-2 text-sm font-bold text-muted">
       <span>
-        {done} of {total} {total === 1 ? 'word' : 'words'} done
+        {done} of {total} {total === 1 ? 'word' : 'words'} done, {questionsDone} of {questionTotal}{' '}
+        {questionTotal === 1 ? 'question' : 'questions'}
       </span>
       {item.type === 'question' && !item.scored && <span>Practice: not scored</span>}
     </div>
@@ -545,14 +561,17 @@ function ScoreChange({ question, verdict }: { question: Question; verdict: Sessi
     ['Next review', `${nextReviewOf(after, now)} (was ${nextReviewOf(before, now)})`],
   ]
   return (
-    <dl className="flex flex-col gap-1.5">
-      {rows.map(([label, value]) => (
-        <div key={label} className="flex flex-wrap justify-between gap-2">
-          <dt className="text-muted">{label}</dt>
-          <dd className="font-bold">{value}</dd>
-        </div>
-      ))}
-    </dl>
+    <div className="flex flex-col gap-1.5">
+      <p className="text-sm font-bold text-muted">{directionLabel(question.direction)}</p>
+      <dl className="flex flex-col gap-1.5">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex flex-wrap justify-between gap-2">
+            <dt className="text-muted">{label}</dt>
+            <dd className="font-bold">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   )
 }
 
@@ -569,18 +588,28 @@ function SummaryView({ summary, onAgain }: { summary: SessionEnd['summary']; onA
     <Card className="flex flex-col gap-4">
       <h2 className="text-2xl text-primary">Session complete</h2>
       <p className="font-bold">
-        {summary.correct_count} of {summary.word_count} right at the first try
+        {summary.correct_count} of {summary.word_count} {summary.word_count === 1 ? 'word' : 'words'}{' '}
+        right in every direction, {summary.correct_question_count} of {summary.question_count}{' '}
+        {summary.question_count === 1 ? 'question' : 'questions'} right at the first try
       </p>
-      <ul className="flex flex-col gap-2">
+      <ul className="flex flex-col gap-3">
         {summary.words.map((word, index) => (
-          <li key={index} className="flex flex-wrap items-center justify-between gap-2">
+          <li key={index} className="flex flex-col gap-1">
             <span>
               <span lang="ko" className="font-bold">
                 {word.korean}
               </span>
               : {word.translations.join('; ')}
             </span>
-            <span className="text-sm font-bold text-muted">{word.correct ? 'right' : 'missed'}</span>
+            <ul className="flex flex-col gap-0.5 text-sm">
+              {word.directions.map((result) => (
+                <li key={result.direction} className="flex items-center gap-2">
+                  {result.correct ? <CheckIcon className="size-4 text-success-ink" /> : <CrossIcon className="size-4 text-error-ink" />}
+                  <span className="text-muted">{directionLabel(result.direction)}:</span>
+                  <span className="font-bold">{result.correct ? 'right' : 'missed'}</span>
+                </li>
+              ))}
+            </ul>
           </li>
         ))}
       </ul>
