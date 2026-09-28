@@ -35,7 +35,7 @@ const CHOICE_QUESTION = {
   mode: 'choice',
   prompt: '사과',
   audio_url: null,
-  options: ['pear', 'apple; pomme', 'grape', 'persimmon'],
+  options: ['pear', 'apple, pomme', 'grape', 'persimmon'],
   scored: true,
   progress: PROGRESS,
 }
@@ -57,7 +57,7 @@ const HANGUL_TYPING_QUESTION = {
   item_id: 'q3',
   direction: 'translation_to_hangul',
   mode: 'typing',
-  prompt: 'apple; pomme',
+  prompt: 'apple, pomme',
   audio_url: null,
   options: null,
   scored: true,
@@ -91,7 +91,7 @@ const WRONG_SCORED = {
   correct: false,
   korean: '사과',
   translations: ['apple', 'pomme'],
-  correct_option: 'apple; pomme',
+  correct_option: 'apple, pomme',
   scored: true,
   statistics_before: KNOWN,
   statistics_after: LAPSED,
@@ -298,7 +298,7 @@ test('a presentation shows the Korean as Korean and the translations, plays, and
 
   const korean = await screen.findByText('사과')
   expect(korean.getAttribute('lang')).toBe('ko')
-  expect(screen.getByText('apple; pomme')).toBeDefined()
+  expect(screen.getByText('apple, pomme')).toBeDefined()
   const playsBefore = playSpy.mock.calls.length
   fireEvent.click(button('Play the word'))
   expect(playSpy.mock.calls.length).toBe(playsBefore + 1)
@@ -323,7 +323,7 @@ test('a choice question answers with one tap, and the controls stay disabled unt
 
   fireEvent.click(button('grape'))
   await waitFor(() => expect(button('grape').disabled).toBe(true))
-  fireEvent.click(button('apple; pomme'))
+  fireEvent.click(button('apple, pomme'))
   expect(button("I don't know").disabled).toBe(true)
   deliver({ status: 200, body: WRONG_SCORED })
 
@@ -418,9 +418,9 @@ test('a wrong scored answer shows the word, the right option, and the score and 
   fireEvent.click(await screen.findByRole('button', { name: 'grape' }))
 
   const verdict = await screen.findByRole('status')
-  expect(verdict.textContent).toContain('사과: apple; pomme')
+  expect(verdict.textContent).toContain('사과: apple, pomme')
   expect(verdict.querySelector('[lang="ko"]')?.textContent).toBe('사과')
-  expect(verdict.textContent).toContain('The right answer: apple; pomme')
+  expect(verdict.textContent).toContain('The right answer: apple, pomme')
   expect(screen.getByText('54% → 14%')).toBeDefined()
   expect(screen.getByText('9.2 days → 1.3 days')).toBeDefined()
   expect(screen.getByText('in 1 day (was in 9 days)')).toBeDefined()

@@ -239,7 +239,7 @@ function EditWordForm({
 }) {
   const [korean, setKorean] = useState(word.korean)
   // Back in the form they are typed in, and sent back as typed.
-  const [translations, setTranslations] = useState(word.translations.join('; '))
+  const [translations, setTranslations] = useState(word.translations.join(', '))
   const [tags, setTags] = useState(tagsToField(word.tags))
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -452,7 +452,7 @@ export function WordDetailPage({ id }: { id: number }) {
             <h1 lang="ko" className="text-5xl wrap-break-word text-primary">
               {word.korean}
             </h1>
-            <p className="text-lg">{word.translations.join('; ')}</p>
+            <p className="text-lg">{word.translations.join(', ')}</p>
             {word.tags.length > 0 && (
               <p className="flex flex-wrap gap-2">
                 {word.tags.map((tag) => (

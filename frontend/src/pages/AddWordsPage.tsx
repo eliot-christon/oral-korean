@@ -193,7 +193,7 @@ export function AddWordsPage() {
             <Field
               label="Translations"
               type="text"
-              placeholder="house; home"
+              placeholder="house, home"
               autoComplete="off"
               enterKeyHint="done"
               value={translations}
@@ -204,8 +204,8 @@ export function AddWordsPage() {
         ) : (
           <Field
             as="textarea"
-            label="Words, one per line: the Korean, a semicolon, then its translations"
-            placeholder={'사과 ; apple\n집 ; house; home'}
+            label="Words, one per line: the Korean, a semicolon, then its translations separated by commas"
+            placeholder={'사과 ; apple\n집 ; house, home'}
             {...KOREAN_INPUT}
             value={text}
             onChange={(event) => setText(event.target.value)}
