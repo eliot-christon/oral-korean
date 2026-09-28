@@ -42,13 +42,25 @@ describe('parseRoute', () => {
     ['#/words/new/', { page: 'addWords' }],
     ['#/words/new/x', NOT_FOUND],
     ['#/numbers/new', NOT_FOUND],
+    ['#/learn', { page: 'learn' }],
+    ['#/learn/', { page: 'learn' }],
+    ['#/review', { page: 'review' }],
+    ['#/learn/x', NOT_FOUND],
+    ['#/review/1', NOT_FOUND],
   ])('reads %j as %j', (hash, route) => {
     expect(parseRoute(hash)).toEqual(route)
   })
 })
 
 describe('routeHref', () => {
-  it.each<LinkableRoute>([NUMBERS, WORDS, { page: 'addWords' }, { page: 'word', id: 12 }] as LinkableRoute[])(
+  it.each<LinkableRoute>([
+    NUMBERS,
+    WORDS,
+    { page: 'addWords' },
+    { page: 'word', id: 12 },
+    { page: 'learn' },
+    { page: 'review' },
+  ] as LinkableRoute[])(
     'writes an address that parseRoute reads back as %j',
     (route) => {
       expect(parseRoute(routeHref(route))).toEqual(route)

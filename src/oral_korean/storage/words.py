@@ -6,8 +6,8 @@ as the word), it does not normalise a tag filter, and it validates nothing a wor
 already validated. The one rule it enforces itself is the one only it can see: a word's
 match key is unique across everything stored.
 
-Recording an answered review, and the due and new queries, arrive with their consumer in
-`vocab-sessions`.
+An answered review is recorded as given too: the caller grades it with `srs/` and hands over
+the new state, its record and how the question was asked, written in one transaction.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from oral_korean.exercises.vocab import AnswerMode, Direction
 from oral_korean.exercises.vocab_words import VocabularyWord, WordDraft
 from oral_korean.korean import hangul
 from oral_korean.srs.memory import Familiarity, Grade, MemoryState, ReviewRecord
@@ -31,6 +32,8 @@ _WORD_COLUMNS: Final = (
 _REVIEW_COLUMNS: Final = (
     "grade, reviewed_at, is_seed, recall_before, stability, difficulty, next_review"
 )
+_ANSWER_COLUMNS: Final = "direction, answer_mode, correct"
+"""Added by migration 2; a seed's row leaves them null, so inserting one never names them."""
 
 type _Row = tuple[Any, ...]
 """A row as `sqlite3` returns it: untyped, so each column is converted where it is read."""
@@ -46,6 +49,23 @@ class DuplicateWordError(ValueError):
     def __init__(self, korean: str) -> None:
         self.korean = korean
         super().__init__(f"{korean} is already in the vocabulary.")
+
+
+@dataclass(frozen=True)
+class AnswerContext:
+    """How an answered review was asked, and whether the answer was right."""
+
+    direction: Direction
+    mode: AnswerMode
+    correct: bool
+
+
+@dataclass(frozen=True)
+class HistoryRow:
+    """One entry of a word's history: the review, and how it was asked (`None` for a seed)."""
+
+    record: ReviewRecord
+    answer: AnswerContext | None
 
 
 @dataclass(frozen=True)
@@ -147,15 +167,77 @@ class WordStore:
             ).fetchall()
         return tuple(TagCount(tag=tag, count=count) for tag, count in rows)
 
-    def history(self, word_id: int) -> tuple[ReviewRecord, ...]:
+    def history(self, word_id: int) -> tuple[HistoryRow, ...]:
         """A word's seed and answers, oldest first; `()` for an unknown word."""
         with self._database.transaction() as connection:
             rows = connection.execute(
-                f"SELECT {_REVIEW_COLUMNS} FROM reviews WHERE word_id = ? "
+                f"SELECT {_REVIEW_COLUMNS}, {_ANSWER_COLUMNS} FROM reviews WHERE word_id = ? "
                 "ORDER BY reviewed_at, id",
                 (word_id,),
             ).fetchall()
-        return tuple(_review_from_row(row) for row in rows)
+        return tuple(_history_row(row) for row in rows)
+
+    def record_answer(
+        self, word_id: int, state: MemoryState, record: ReviewRecord, answer: AnswerContext
+    ) -> bool:
+        """Write a word's new memory state and the history row of the answer that led to it,
+        both or neither; `False`, with nothing written, if the word no longer exists.
+
+        Raises:
+            ValueError: a datetime in `state` or `record` is naive.
+        """
+        with self._database.transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE words SET stability = ?, difficulty = ?, next_review = ?, "
+                "last_review = ?, review_count = ?, lapse_count = ? WHERE id = ?",
+                (*_memory_as_row(state), word_id),
+            )
+            if cursor.rowcount == 0:
+                return False
+            _insert_review(connection, word_id, record, answer)
+            return True
+
+    def new_words(self, *, tag: str | None = None, limit: int) -> tuple[VocabularyWord, ...]:
+        """Up to `limit` words never seeded nor answered, oldest first, optionally with `tag`."""
+        return self._select_words(
+            "stability IS NULL", (), order="added_at, id", tag=tag, limit=limit
+        )
+
+    def due_words(
+        self, at: datetime, *, tag: str | None = None, limit: int
+    ) -> tuple[VocabularyWord, ...]:
+        """Up to `limit` words whose next review is at or before `at`, most overdue first,
+        optionally with `tag`.
+
+        Raises:
+            ValueError: `at` is naive.
+        """
+        return self._select_words(
+            "next_review <= ?", (_as_text(at),), order="next_review, id", tag=tag, limit=limit
+        )
+
+    def _select_words(
+        self,
+        condition: str,
+        parameters: tuple[object, ...],
+        *,
+        order: str,
+        tag: str | None,
+        limit: int,
+    ) -> tuple[VocabularyWord, ...]:
+        """The words matching `condition` (and carrying `tag`, if given), in `order`, capped.
+
+        `condition` and `order` are this module's own SQL fragments, never user input.
+        """
+        if tag is not None:
+            condition += " AND id IN (SELECT word_id FROM word_tags WHERE tag = ?)"
+            parameters = (*parameters, tag)
+        with self._database.transaction() as connection:
+            rows = connection.execute(
+                f"SELECT id FROM words WHERE {condition} ORDER BY {order} LIMIT ?",
+                (*parameters, limit),
+            )
+            return tuple(_read_words(connection, [row[0] for row in rows]))
 
 
 def _korean_with_key(connection: sqlite3.Connection, key: str) -> str | None:
@@ -201,19 +283,31 @@ def _insert_tags(connection: sqlite3.Connection, word_id: int, tags: Iterable[st
     )
 
 
-def _insert_review(connection: sqlite3.Connection, word_id: int, record: ReviewRecord) -> None:
+def _insert_review(
+    connection: sqlite3.Connection,
+    word_id: int,
+    record: ReviewRecord,
+    answer: AnswerContext | None = None,
+) -> None:
+    """Insert one history row; the answer columns only for an answer, so a seed can still be
+    written to a file at schema version 1."""
+    columns = _REVIEW_COLUMNS
+    values: tuple[object, ...] = (
+        word_id,
+        record.grade.value,
+        _as_text(record.reviewed_at),
+        int(record.is_seed),
+        record.recall_before,
+        record.stability,
+        record.difficulty,
+        _as_text(record.next_review),
+    )
+    if answer is not None:
+        columns += f", {_ANSWER_COLUMNS}"
+        values += (answer.direction.value, answer.mode.value, int(answer.correct))
+    placeholders = ", ".join("?" * len(values))
     connection.execute(
-        f"INSERT INTO reviews (word_id, {_REVIEW_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            word_id,
-            record.grade.value,
-            _as_text(record.reviewed_at),
-            int(record.is_seed),
-            record.recall_before,
-            record.stability,
-            record.difficulty,
-            _as_text(record.next_review),
-        ),
+        f"INSERT INTO reviews (word_id, {columns}) VALUES ({placeholders})", values
     )
 
 
@@ -276,9 +370,12 @@ def _memory_from_row(memory: Sequence[Any]) -> MemoryState | None:
     )
 
 
-def _review_from_row(row: _Row) -> ReviewRecord:
-    grade, reviewed_at, is_seed, recall_before, stability, difficulty, next_review = row
-    return ReviewRecord(
+def _history_row(row: _Row) -> HistoryRow:
+    (
+        grade, reviewed_at, is_seed, recall_before, stability, difficulty, next_review,
+        direction, answer_mode, correct,
+    ) = row
+    record = ReviewRecord(
         grade=Grade(grade),
         reviewed_at=_from_text(reviewed_at),
         is_seed=bool(is_seed),
@@ -287,6 +384,12 @@ def _review_from_row(row: _Row) -> ReviewRecord:
         difficulty=difficulty,
         next_review=_from_text(next_review),
     )
+    answer = None
+    if direction is not None:
+        answer = AnswerContext(
+            direction=Direction(direction), mode=AnswerMode(answer_mode), correct=bool(correct)
+        )
+    return HistoryRow(record=record, answer=answer)
 
 
 def _translations_as_text(translations: Sequence[str]) -> str:

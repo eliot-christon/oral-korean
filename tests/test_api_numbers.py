@@ -92,7 +92,7 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import FakeSpeechEngine, NumbersHarness, build_numbers_harness
+from conftest import FakeSpeechEngine, NumbersHarness, build_numbers_harness, leaks
 
 from oral_korean.exercises.numbers import NumberQuestion
 from oral_korean.korean.numerals import NumeralSystem, render_number, supported_range
@@ -121,19 +121,6 @@ def stored_question(harness: NumbersHarness, question_id: str) -> NumberQuestion
     """
     store: dict[str, NumberQuestion] = harness.app.state.number_questions
     return store[question_id]
-
-
-def leaks(body: dict[str, object], question_id: str, needle: str) -> bool:
-    """Whether `needle` appears anywhere in `body` once the opaque id is redacted.
-
-    The id is expected to appear in the response (as `question_id` and inside
-    `audio_url`), and an opaque id built from arbitrary hex digits will, essentially
-    always, coincidentally contain any single digit somewhere in its length - that
-    coincidence says nothing about the answer leaking. Redacting the id first is what
-    keeps this check about real disclosure instead of about the shape of a UUID.
-    """
-    redacted = json.dumps(body).replace(question_id, "")
-    return needle in redacted
 
 
 # ---------------------------------------------------------------------------------

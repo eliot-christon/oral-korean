@@ -86,7 +86,19 @@ answered, or all set. Datetimes are ISO-8601 UTC text with microseconds, which s
 order.
 """
 
-MIGRATIONS: Final[tuple[str, ...]] = (_MIGRATION_1,)
+_MIGRATION_2: Final = """
+ALTER TABLE reviews ADD COLUMN direction TEXT;
+ALTER TABLE reviews ADD COLUMN answer_mode TEXT;
+ALTER TABLE reviews ADD COLUMN correct INTEGER CHECK (correct IN (0, 1));
+"""
+"""How each answer was asked and whether it was right (vocab-sessions T03).
+
+Null on every seed, and on every row written before this migration: nothing was asked then.
+Set together on an answered review, so the direction can be analysed later (one FSRS memory
+per word, whatever the direction).
+"""
+
+MIGRATIONS: Final[tuple[str, ...]] = (_MIGRATION_1, _MIGRATION_2)
 """Every migration, in order. Append-only once shipped: see the module docstring."""
 
 

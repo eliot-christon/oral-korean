@@ -93,6 +93,25 @@ export function BookIcon({ className = 'size-6' }: { className?: string }) {
   )
 }
 
+/** A four-pointed sparkle: learning new words, in the navigation. */
+export function LearnIcon({ className = 'size-6' }: { className?: string }) {
+  return (
+    <Svg className={className}>
+      <path d="M12 3.5l2.2 6.3 6.3 2.2-6.3 2.2-2.2 6.3-2.2-6.3-6.3-2.2 6.3-2.2z" />
+    </Svg>
+  )
+}
+
+/** A circular arrow: reviewing the words that are due, in the navigation. */
+export function ReviewIcon({ className = 'size-6' }: { className?: string }) {
+  return (
+    <Svg className={className}>
+      <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" />
+      <path d="M19.5 4v4.5H15" />
+    </Svg>
+  )
+}
+
 export function ChevronDownIcon({ className = 'size-5' }: { className?: string }) {
   return (
     <Svg className={className}>

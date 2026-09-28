@@ -5,7 +5,7 @@
  * what a familiarity level seeds all arrive from the backend.
  */
 
-import type { Familiarity, FamiliarityLevel, Grade } from './api'
+import type { AnswerMode, Direction, Familiarity, FamiliarityLevel, Grade } from './api'
 
 // Records, so a level or grade added to the union without a label here fails to compile.
 const FAMILIARITY_LABELS: Record<Familiarity, string> = {
@@ -20,6 +20,26 @@ const GRADE_LABELS: Record<Grade, string> = {
   hard: 'Hard',
   good: 'Good',
   easy: 'Easy',
+}
+
+const DIRECTION_LABELS: Record<Direction, string> = {
+  hangul_to_translation: 'Hangul to translation',
+  translation_to_hangul: 'Translation to Hangul',
+  voice_to_hangul: 'Voice to Hangul',
+  voice_to_translation: 'Voice to translation',
+}
+
+const ANSWER_MODE_LABELS: Record<AnswerMode, string> = {
+  choice: 'multiple choice',
+  typing: 'typed',
+}
+
+export function directionLabel(direction: Direction): string {
+  return DIRECTION_LABELS[direction]
+}
+
+export function answerModeLabel(mode: AnswerMode): string {
+  return ANSWER_MODE_LABELS[mode]
 }
 
 export function familiarityLabel(familiarity: Familiarity): string {
