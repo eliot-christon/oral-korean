@@ -47,46 +47,58 @@ together and let you filter the list and your sessions.
 Each word gets a **familiarity level**, which decides where it starts:
 
 - **New**: not known yet. It waits for a learn session.
-- **A little**, **Well**, **Very well**: known already. The word counts as reviewed once,
-  graded Hard, Good or Easy, and starts with a score (14%, 20% or 38%) and a first review in
-  about 1, 2 or 8 days.
+- **A little**, **Well**, **Very well**: known already. The word counts as reviewed once in
+  every direction, graded Hard, Good or Easy, and starts with a score (14%, 20% or 38%) and a
+  first review in about 1, 2 or 8 days.
 
 ### Score and recall
 
-Each word's memory is modelled with [FSRS](https://github.com/open-spaced-repetition/py-fsrs),
-the scheduler behind modern spaced-repetition apps.
+Each word has **four memories**, one per direction (below), each modelled with
+[FSRS](https://github.com/open-spaced-repetition/py-fsrs), the scheduler behind modern
+spaced-repetition apps. Knowing a word's meaning when you read it and being able to write it
+when you hear it are different skills, so each direction has its own score and its own due
+date.
 
-- **Score** is the word's strength, read off FSRS's stability (how many days until you are
+- **Score** is a direction's strength, read off FSRS's stability (how many days until you are
   likely to forget it). It goes **up on a right answer and down on a miss**, and nothing else
   moves it. 100% means a year of stability.
-- **Recall** is the predicted chance you would get the word right now. It reads 100% for a
-  day after any review, even a missed one, then decays until the word is due again.
+- A **word's score** is the average of its four direction scores, a direction not learned yet
+  counting 0%. The word page shows all four, and its history can be read one direction at a
+  time.
+- **Recall** is the predicted chance you would get a direction right now. It reads 100% for a
+  day after any review, even a missed one, then decays until that direction is due again.
 
 ### Sessions
 
-- **Learn** introduces new words, oldest first: each is shown (Korean, translations, audio),
-  then asked straight away.
-- **Review** asks the words that are due, most overdue first.
+- **Learn** introduces new words from your **learn queue**, which you order on the start
+  form with the move buttons: the top words are the next session's. Each word is shown
+  (Korean, translations, audio), then asked in every direction it has not learned yet.
+- **Review** starts from a picker: the due words are selected, most overdue first, and you
+  can add words that are not due yet to review them early, and reorder the selection. Each
+  word is asked in every direction that is due, or in all its learned directions when you
+  review it early.
 
 You can limit a session to one tag and choose how many words it takes (5 to learn and 20 to
-review by default).
+review by default). A session shuffles its words and spreads each word's directions among
+the other words' questions.
 
-Every question comes in one of four **directions**: Hangul to translation, translation to
-Hangul, voice to Hangul (you hear it, you write the Korean) and voice to translation. Untick
-the two voice directions to practise without audio.
+There are four **directions**: Hangul to translation, translation to Hangul, voice to Hangul
+(you hear it, you write the Korean) and voice to translation. Untick the two voice directions
+to practise without audio.
 
-A weak word is asked by **multiple choice**; once it is stronger (two days of stability), you
-**type** the answer, which counts for more. Typed translations ignore case, accents,
+A weak direction is asked by **multiple choice**; once it is stronger (two days of
+stability), you **type** the answer, which counts for more. Typed translations ignore case, accents,
 punctuation and extra spaces, and any of the word's translations is accepted; typed Korean
 ignores spacing and punctuation. "I don't know" is always there and counts as a miss.
 
-Only your **first answer** to each word counts. A missed word comes back at the end of the
-session for practice, at most twice, and a practice answer is **not scored**. After every
-answer you see the word, and for a scored one how its score and next review moved.
+Only your **first answer** to each word in each direction counts. A missed question comes
+back at the end of the session for practice, at most twice, and a practice answer is **not
+scored**. After every answer you see the word, and for a scored one how that direction's
+score and next review moved. The summary lists each word with how each direction went.
 
 ### Your data
 
-Your words, tags and history live in one SQLite file, `.data/oral-korean.sqlite3`, outside
+Your words, tags, history and learn queue live in one SQLite file, `.data/oral-korean.sqlite3`, outside
 git. The container and `uv run main.py` share it, so your vocabulary is the same in both run
 modes, but **never run both at once**.
 
@@ -175,7 +187,7 @@ src/oral_korean/
   api/                   HTTP layer: FastAPI app, routes, helpers exercises share
   exercises/             exercise logic: numbers, vocabulary words and sessions
   korean/                language primitives shared between exercises
-  srs/                   word memory with FSRS: seeds, grades, score, statistics
+  srs/                   word memory with FSRS: seeds, grades, scores, statistics
   storage/               the vocabulary in SQLite, with numbered migrations
   tts/                   speech synthesis behind a one-method interface
 frontend/                Vite + React + TypeScript + Tailwind CSS

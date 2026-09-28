@@ -2,10 +2,12 @@ import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 
 
 import {
   ApiError,
+  DIRECTIONS,
   deleteWord,
   editWord,
   errorMessage,
   fetchWord,
+  type Direction,
   type HistoryEntry,
   type Word,
   type WordDetail,
@@ -24,6 +26,7 @@ import {
   formatDateTime,
   formatDays,
   formatDifficulty,
+  formatDue,
   formatPercent,
   formatScore,
   formatTimeUntil,
@@ -45,8 +48,10 @@ interface Statistic {
 }
 
 /**
- * Every figure FSRS keeps, each with one line in plain words. A new word has no memory yet,
- * so it shows its score as "New" and none of the figures that only a review gives.
+ * The word as a whole, each figure with one line in plain words. A new word has no memory
+ * yet, so it shows its score as "New" and none of the figures that only a review gives.
+ * Recall, stability and difficulty belong to one direction: the backend leaves them null
+ * here, and they are shown per direction instead (`DirectionScores`).
  */
 function statisticsOf(word: WordDetail, now: Date): Statistic[] {
   const figures: WordStatistics = word.statistics
@@ -55,7 +60,8 @@ function statisticsOf(word: WordDetail, now: Date): Statistic[] {
       label: 'Score',
       value: formatScore(figures.score),
       explanation:
-        'Strength: rises when you get it right, drops when you miss, 100% once it lasts a year.',
+        'Strength: rises when you get it right, drops when you miss, 100% once it lasts a year. ' +
+        'The average of the four directions below, one not learned yet counting 0%.',
     },
   ]
   if (figures.recall !== null) {
@@ -92,7 +98,7 @@ function statisticsOf(word: WordDetail, now: Date): Statistic[] {
           </span>
         </>
       ),
-      explanation: 'When it is due to be asked again.',
+      explanation: 'When it is due to be asked again, in the first direction that falls due.',
     })
   }
   if (figures.last_review !== null) {
@@ -143,11 +149,32 @@ function StatisticsList({ rows }: { rows: Statistic[] }) {
   )
 }
 
+/** Each direction's own score and when it is next due; "New" for one never learned. */
+function DirectionScores({ word, now }: { word: WordDetail; now: Date }) {
+  return (
+    <dl className="flex flex-col divide-y divide-line/20">
+      {DIRECTIONS.map((direction) => {
+        const figures = word.direction_statistics[direction]
+        const due = formatDue(figures, now)
+        return (
+          <div key={direction} className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
+            <dt className="min-w-0">
+              <span className="font-bold">{directionLabel(direction)}</span>
+              {due !== null && <span className="block text-sm text-muted">Next review {due}</span>}
+            </dt>
+            <dd className="shrink-0 text-right font-bold text-primary">{formatScore(figures.score)}</dd>
+          </div>
+        )
+      })}
+    </dl>
+  )
+}
+
 function whatHappened(entry: HistoryEntry, word: WordDetail): string {
   if (entry.is_seed) {
     return (
       `Added as '${familiarityLabel(word.familiarity)}' - counted as a first review ` +
-      `graded ${gradeLabel(entry.grade)}`
+      `graded ${gradeLabel(entry.grade)}, in every direction`
     )
   }
   if (entry.direction === null || entry.mode === null) {
@@ -369,6 +396,9 @@ export function WordDetailPage({ id }: { id: number }) {
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [saved, setSaved] = useState(false)
+  // The history shown: every entry, or one direction's answers with the seed, which applies
+  // to all four.
+  const [historyDirection, setHistoryDirection] = useState<Direction | ''>('')
 
   function handleSaved(current: WordDetail, updated: Word): void {
     // An edit keeps the word's memory and history, and the answer carries no history.
@@ -462,16 +492,42 @@ export function WordDetailPage({ id }: { id: number }) {
           </Card>
 
           <Card className="flex flex-col gap-4">
+            <h2 className="text-2xl text-primary">By direction</h2>
+            <DirectionScores word={word} now={new Date()} />
+          </Card>
+
+          <Card className="flex flex-col gap-4">
             <h2 className="text-2xl text-primary">History</h2>
             {word.history.length === 0 ? (
               <p className="text-muted">No reviews yet.</p>
             ) : (
-              <ol className="flex flex-col divide-y divide-line/20">
-                {word.history.map((entry, index) => (
-                  // In order and never reordered, so the position is a stable key.
-                  <HistoryItem key={index} entry={entry} word={word} />
-                ))}
-              </ol>
+              <>
+                <Field
+                  label="Show"
+                  as="select"
+                  value={historyDirection}
+                  onChange={(event) => setHistoryDirection(event.target.value as Direction | '')}
+                >
+                  <option value="">Every direction</option>
+                  {DIRECTIONS.map((direction) => (
+                    <option key={direction} value={direction}>
+                      {directionLabel(direction)}
+                    </option>
+                  ))}
+                </Field>
+                <ol className="flex flex-col divide-y divide-line/20">
+                  {word.history.map(
+                    (entry, index) =>
+                      // In order and never reordered, so the position is a stable key. An
+                      // entry with no direction (a seed) belongs to every direction.
+                      (historyDirection === '' ||
+                        entry.direction === null ||
+                        entry.direction === historyDirection) && (
+                        <HistoryItem key={index} entry={entry} word={word} />
+                      ),
+                  )}
+                </ol>
+              </>
             )}
           </Card>
         </>
