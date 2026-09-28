@@ -396,7 +396,9 @@ DISTRACTORS: Final = (("배", "pear"), ("감", "persimmon"), ("포도", "grape")
 """Added `very_well`: neither new nor due at T0, so they only ever appear as options."""
 
 DONT_KNOW: Final[Mapping[str, object]] = {"dont_know": True}
-MAX_ITEMS: Final = 50
+MAX_ITEMS: Final = 100
+"""A walk's termination cap. Five new words in all four directions (vocab-directions T02),
+every answer "I don't know": 5 presentations, 20 scored questions, 40 practice ones."""
 
 
 def next_path(session_id: str) -> str:
@@ -579,13 +581,18 @@ def ask(harness: NumbersHarness, direction: str, mode: str) -> Asked:
     return ask_by_typing(harness, direction)
 
 
-def walk(client: TestClient, session_id: str, body: Mapping[str, object]) -> list[Json]:
-    """Every item up to and including the end, answering each question with `body`."""
+def walk(
+    client: TestClient,
+    session_id: str,
+    body: Mapping[str, object] | Callable[[Json], Mapping[str, object]],
+) -> list[Json]:
+    """Every item up to and including the end, answering each question with `body`, or with
+    what `body` returns for it."""
     items: list[Json] = []
     while len(items) < MAX_ITEMS and (not items or items[-1]["type"] != "end"):
         item = next_item(client, session_id)
         items.append(item)
         if item["type"] == "question":
-            answered(client, item["item_id"], body)
+            answered(client, item["item_id"], body(item) if callable(body) else body)
     assert items[-1]["type"] == "end", f"the session did not end within {MAX_ITEMS} items"
     return items

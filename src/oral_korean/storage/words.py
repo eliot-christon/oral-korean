@@ -8,25 +8,29 @@ match key is unique across everything stored.
 
 An answered review is recorded as given too: the caller grades it with `srs/` and hands over
 the new state, its record and how the question was asked, written in one transaction.
+
+A word has one memory per direction, each a row of `direction_memories` (migration 3); a
+direction never seeded nor answered has no row. The memory columns on `words` hold migration 1's
+single memory, left in place and never read or written again.
 """
 
 from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
 from oral_korean.exercises.vocab import AnswerMode, Direction
-from oral_korean.exercises.vocab_words import VocabularyWord, WordDraft
+from oral_korean.exercises.vocab_words import VocabularyWord, WordDraft, same_memory
 from oral_korean.korean import hangul
 from oral_korean.srs.memory import Familiarity, Grade, MemoryState, ReviewRecord
 from oral_korean.storage.database import Database
 
-_WORD_COLUMNS: Final = (
-    "id, korean, translations, familiarity, added_at, "
+_WORD_COLUMNS: Final = "id, korean, translations, familiarity, added_at"
+_MEMORY_COLUMNS: Final = (
     "stability, difficulty, next_review, last_review, review_count, lapse_count"
 )
 _REVIEW_COLUMNS: Final = (
@@ -49,6 +53,11 @@ class DuplicateWordError(ValueError):
     def __init__(self, korean: str) -> None:
         self.korean = korean
         super().__init__(f"{korean} is already in the vocabulary.")
+
+
+class QueueOrderError(ValueError):
+    """A learn-queue order the store refuses: an unknown or repeated id, or a word with
+    nothing left to learn. The message names ids only, never a word's text."""
 
 
 @dataclass(frozen=True)
@@ -113,6 +122,11 @@ class WordStore:
         with self._database.transaction() as connection:
             found = _read_words(connection, [word_id])
         return found[0] if found else None
+
+    def get_words(self, word_ids: Sequence[int]) -> tuple[VocabularyWord, ...]:
+        """The words with these ids, in the order given, skipping any that do not exist."""
+        with self._database.transaction() as connection:
+            return tuple(_read_words(connection, word_ids))
 
     def list_words(self, *, tag: str | None = None) -> tuple[VocabularyWord, ...]:
         """Every word, or every word carrying `tag` exactly, in the order they were added."""
@@ -187,57 +201,154 @@ class WordStore:
             ValueError: a datetime in `state` or `record` is naive.
         """
         with self._database.transaction() as connection:
-            cursor = connection.execute(
-                "UPDATE words SET stability = ?, difficulty = ?, next_review = ?, "
-                "last_review = ?, review_count = ?, lapse_count = ? WHERE id = ?",
-                (*_memory_as_row(state), word_id),
-            )
-            if cursor.rowcount == 0:
+            exists = connection.execute("SELECT 1 FROM words WHERE id = ?", (word_id,))
+            if exists.fetchone() is None:
                 return False
+            _write_memory(connection, word_id, answer.direction, state)
             _insert_review(connection, word_id, record, answer)
             return True
 
-    def new_words(self, *, tag: str | None = None, limit: int) -> tuple[VocabularyWord, ...]:
-        """Up to `limit` words never seeded nor answered, oldest first, optionally with `tag`."""
-        return self._select_words(
-            "stability IS NULL", (), order="added_at, id", tag=tag, limit=limit
-        )
+    def new_words(
+        self,
+        *,
+        tag: str | None = None,
+        directions: Collection[Direction] = tuple(Direction),
+        limit: int,
+    ) -> tuple[VocabularyWord, ...]:
+        """Up to `limit` words with no memory yet in at least one of `directions`, in learn
+        queue order, optionally with `tag`: the top of `learn_queue`."""
+        condition, parameters = _learnable(directions)
+        return self._select_words(condition, parameters, order=_QUEUE_ORDER, tag=tag, limit=limit)
+
+    def learn_queue(
+        self, *, tag: str | None = None, directions: Collection[Direction] = tuple(Direction)
+    ) -> tuple[VocabularyWord, ...]:
+        """Every word with no memory yet in at least one of `directions`, in the order the
+        user set, optionally with `tag`."""
+        condition, parameters = _learnable(directions)
+        return self._select_words(condition, parameters, order=_QUEUE_ORDER, tag=tag, limit=None)
+
+    def reorder_learn_queue(self, word_ids: Sequence[int]) -> None:
+        """Move these words to the top of the learn queue, in this order; every other word
+        keeps its place relative to the others, after them.
+
+        Raises:
+            QueueOrderError: an id is repeated or unknown, or its word has a memory in every
+                direction, so nothing is left to learn; nothing is changed.
+        """
+        if len(set(word_ids)) != len(word_ids):
+            raise QueueOrderError("The same word is listed twice.")
+        with self._database.transaction() as connection:
+            queue = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT word_id FROM learn_queue ORDER BY position, word_id"
+                )
+            ]
+            unknown = sorted(set(word_ids) - set(queue))
+            if unknown:
+                raise QueueOrderError(f"No word with id {', '.join(map(str, unknown))}.")
+            placeholders = ", ".join("?" * len(word_ids))
+            learned = sorted(
+                row[0]
+                for row in connection.execute(
+                    "SELECT word_id FROM direction_memories "
+                    f"WHERE word_id IN ({placeholders}) GROUP BY word_id HAVING COUNT(*) = ?",
+                    (*word_ids, len(Direction)),
+                )
+            )
+            if learned:
+                raise QueueOrderError(
+                    f"Nothing is left to learn of word {', '.join(map(str, learned))}."
+                )
+            moved = set(word_ids)
+            order = [*word_ids, *(word_id for word_id in queue if word_id not in moved)]
+            connection.executemany(
+                "UPDATE learn_queue SET position = ? WHERE word_id = ?",
+                list(enumerate(order, start=1)),
+            )
 
     def due_words(
-        self, at: datetime, *, tag: str | None = None, limit: int
+        self,
+        at: datetime,
+        *,
+        tag: str | None = None,
+        directions: Collection[Direction] = tuple(Direction),
+        limit: int,
     ) -> tuple[VocabularyWord, ...]:
-        """Up to `limit` words whose next review is at or before `at`, most overdue first,
-        optionally with `tag`.
+        """Up to `limit` words with a memory due at or before `at` in at least one of
+        `directions`, the most overdue first, optionally with `tag`.
 
         Raises:
             ValueError: `at` is naive.
         """
+        earliest, parameters = _earliest_review(directions)
+        parameters["at"] = _as_text(at)
         return self._select_words(
-            "next_review <= ?", (_as_text(at),), order="next_review, id", tag=tag, limit=limit
+            f"{earliest} <= :at", parameters, order=f"{earliest}, id", tag=tag, limit=limit
+        )
+
+    def review_candidates(
+        self, *, tag: str | None = None, directions: Collection[Direction] = tuple(Direction)
+    ) -> tuple[VocabularyWord, ...]:
+        """Every word with a memory in at least one of `directions`, optionally with `tag`,
+        by the earliest next review among those: at any instant, the due words come first,
+        the most overdue first, then the others, the soonest first."""
+        earliest, parameters = _earliest_review(directions)
+        return self._select_words(
+            f"{earliest} IS NOT NULL", parameters, order=f"{earliest}, id", tag=tag, limit=None
         )
 
     def _select_words(
         self,
         condition: str,
-        parameters: tuple[object, ...],
+        parameters: dict[str, object],
         *,
         order: str,
         tag: str | None,
-        limit: int,
+        limit: int | None,
     ) -> tuple[VocabularyWord, ...]:
-        """The words matching `condition` (and carrying `tag`, if given), in `order`, capped.
+        """The words matching `condition` (and carrying `tag`, if given), in `order`, capped
+        at `limit` unless it is `None`.
 
-        `condition` and `order` are this module's own SQL fragments, never user input.
+        `condition` and `order` are this module's own SQL fragments, never user input, and
+        take their values from `parameters` by name.
         """
         if tag is not None:
-            condition += " AND id IN (SELECT word_id FROM word_tags WHERE tag = ?)"
-            parameters = (*parameters, tag)
+            condition += " AND id IN (SELECT word_id FROM word_tags WHERE tag = :tag)"
         with self._database.transaction() as connection:
             rows = connection.execute(
-                f"SELECT id FROM words WHERE {condition} ORDER BY {order} LIMIT ?",
-                (*parameters, limit),
+                f"SELECT id FROM words WHERE {condition} ORDER BY {order} LIMIT :limit",
+                # SQLite reads a negative limit as none.
+                {**parameters, "tag": tag, "limit": -1 if limit is None else limit},
             )
             return tuple(_read_words(connection, [row[0] for row in rows]))
+
+
+_QUEUE_ORDER: Final = "(SELECT position FROM learn_queue WHERE word_id = words.id), id"
+"""Learn queue order, as an `ORDER BY` over `words`."""
+
+
+def _learnable(directions: Collection[Direction]) -> tuple[str, dict[str, object]]:
+    """The condition, over `words`, of a word without memory in one of `directions`."""
+    wanted, parameters = _direction_parameters(directions)
+    learned = (
+        "SELECT COUNT(*) FROM direction_memories "
+        f"WHERE word_id = words.id AND direction IN ({wanted})"
+    )
+    parameters["wanted"] = len(set(directions))
+    return f"({learned}) < :wanted", parameters
+
+
+def _earliest_review(directions: Collection[Direction]) -> tuple[str, dict[str, object]]:
+    """The expression, over `words`, of a word's earliest next review among `directions`:
+    null when it has no memory in any of them."""
+    wanted, parameters = _direction_parameters(directions)
+    earliest = (
+        "(SELECT MIN(next_review) FROM direction_memories "
+        f"WHERE word_id = words.id AND direction IN ({wanted}))"
+    )
+    return earliest, parameters
 
 
 def _korean_with_key(connection: sqlite3.Connection, key: str) -> str | None:
@@ -252,19 +363,18 @@ def _insert_word(
     seeded: tuple[MemoryState, ReviewRecord] | None,
     added_at: str,
 ) -> int:
-    """Insert one word, its tags and its seed record; its new id."""
-    state = None if seeded is None else seeded[0]
+    """Insert one word, its tags, its place at the end of the learn queue, and its seed: the
+    same memory in every direction, and one history row with no direction, meaning all of
+    them. Its new id."""
     cursor = connection.execute(
-        "INSERT INTO words (korean, match_key, translations, familiarity, added_at, "
-        "stability, difficulty, next_review, last_review, review_count, lapse_count) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO words (korean, match_key, translations, familiarity, added_at) "
+        "VALUES (?, ?, ?, ?, ?)",
         (
             draft.korean,
             draft.match_key,
             _translations_as_text(draft.translations),
             draft.familiarity.value,
             added_at,
-            *_memory_as_row(state),
         ),
     )
     word_id = cursor.lastrowid
@@ -272,9 +382,34 @@ def _insert_word(
         # An INSERT always sets it; this narrows the type and says so.
         raise RuntimeError("SQLite returned no id for an inserted word")
     _insert_tags(connection, word_id, draft.tags)
+    connection.execute(
+        "INSERT INTO learn_queue (word_id, position) "
+        "SELECT ?, COALESCE(MAX(position), 0) + 1 FROM learn_queue",
+        (word_id,),
+    )
     if seeded is not None:
-        _insert_review(connection, word_id, seeded[1])
+        state, record = seeded
+        for direction in Direction:
+            _write_memory(connection, word_id, direction, state)
+        _insert_review(connection, word_id, record)
     return word_id
+
+
+def _write_memory(
+    connection: sqlite3.Connection, word_id: int, direction: Direction, state: MemoryState
+) -> None:
+    """Set one direction's memory, whether or not it had one."""
+    connection.execute(
+        f"INSERT OR REPLACE INTO direction_memories (word_id, direction, {_MEMORY_COLUMNS}) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (word_id, direction.value, *_memory_as_row(state)),
+    )
+
+
+def _direction_parameters(directions: Collection[Direction]) -> tuple[str, dict[str, object]]:
+    """`directions` as named SQL placeholders for an `IN (...)` list, and their values."""
+    values = {f"direction_{index}": direction.value for index, direction in enumerate(directions)}
+    return ", ".join(f":{name}" for name in values), dict(values)
 
 
 def _insert_tags(connection: sqlite3.Connection, word_id: int, tags: Iterable[str]) -> None:
@@ -306,9 +441,7 @@ def _insert_review(
         columns += f", {_ANSWER_COLUMNS}"
         values += (answer.direction.value, answer.mode.value, int(answer.correct))
     placeholders = ", ".join("?" * len(values))
-    connection.execute(
-        f"INSERT INTO reviews (word_id, {columns}) VALUES ({placeholders})", values
-    )
+    connection.execute(f"INSERT INTO reviews (word_id, {columns}) VALUES ({placeholders})", values)
 
 
 def _read_words(connection: sqlite3.Connection, ids: Sequence[int]) -> list[VocabularyWord]:
@@ -326,12 +459,27 @@ def _read_words(connection: sqlite3.Connection, ids: Sequence[int]) -> list[Voca
         ids,
     ):
         tags.setdefault(word_id, []).append(tag)
-    by_id = {row[0]: _word_from_row(row, tuple(tags.get(row[0], ()))) for row in rows}
+    memories: dict[int, dict[Direction, MemoryState | None]] = {}
+    for word_id, direction, *memory in connection.execute(
+        f"SELECT word_id, direction, {_MEMORY_COLUMNS} FROM direction_memories "
+        f"WHERE word_id IN ({placeholders})",
+        ids,
+    ):
+        states = memories.setdefault(word_id, same_memory(None))
+        states[Direction(direction)] = _memory_from_row(memory)
+    by_id = {
+        row[0]: _word_from_row(
+            row, tuple(tags.get(row[0], ())), memories.get(row[0], same_memory(None))
+        )
+        for row in rows
+    }
     return [by_id[word_id] for word_id in ids if word_id in by_id]
 
 
-def _word_from_row(row: _Row, tags: tuple[str, ...]) -> VocabularyWord:
-    (word_id, korean, translations, familiarity, added_at, *memory) = row
+def _word_from_row(
+    row: _Row, tags: tuple[str, ...], memories: dict[Direction, MemoryState | None]
+) -> VocabularyWord:
+    (word_id, korean, translations, familiarity, added_at) = row
     return VocabularyWord(
         id=word_id,
         korean=korean,
@@ -339,13 +487,11 @@ def _word_from_row(row: _Row, tags: tuple[str, ...]) -> VocabularyWord:
         tags=tags,
         familiarity=Familiarity(familiarity),
         added_at=_from_text(added_at),
-        memory=_memory_from_row(memory),
+        memories=memories,
     )
 
 
-def _memory_as_row(state: MemoryState | None) -> tuple[object, ...]:
-    if state is None:
-        return (None,) * 6
+def _memory_as_row(state: MemoryState) -> tuple[object, ...]:
     return (
         state.stability,
         state.difficulty,
@@ -356,10 +502,8 @@ def _memory_as_row(state: MemoryState | None) -> tuple[object, ...]:
     )
 
 
-def _memory_from_row(memory: Sequence[Any]) -> MemoryState | None:
+def _memory_from_row(memory: Sequence[Any]) -> MemoryState:
     stability, difficulty, next_review, last_review, review_count, lapse_count = memory
-    if stability is None:
-        return None
     return MemoryState(
         stability=stability,
         difficulty=difficulty,
@@ -372,8 +516,16 @@ def _memory_from_row(memory: Sequence[Any]) -> MemoryState | None:
 
 def _history_row(row: _Row) -> HistoryRow:
     (
-        grade, reviewed_at, is_seed, recall_before, stability, difficulty, next_review,
-        direction, answer_mode, correct,
+        grade,
+        reviewed_at,
+        is_seed,
+        recall_before,
+        stability,
+        difficulty,
+        next_review,
+        direction,
+        answer_mode,
+        correct,
     ) = row
     record = ReviewRecord(
         grade=Grade(grade),

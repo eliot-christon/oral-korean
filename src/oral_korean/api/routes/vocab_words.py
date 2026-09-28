@@ -37,6 +37,7 @@ from oral_korean.srs.memory import (
     Grade,
     Phase,
     WordStatistics,
+    aggregate_statistics,
     score,
     seed,
     statistics,
@@ -72,8 +73,10 @@ class EditWordRequest(BaseModel):
 
 
 class WordResponse(BaseModel):
-    """A stored word and its statistics, read at the clock's instant. `statistics` is the
-    `srs.WordStatistics` value itself: pydantic serialises the frozen dataclass as is."""
+    """A stored word and its statistics, read at the clock's instant: `statistics` over the
+    word as a whole (the four directions' memories aggregated), `direction_statistics` for
+    each direction, all four always present. Both are `srs.WordStatistics` values: pydantic
+    serialises the frozen dataclass as is."""
 
     id: int
     korean: str
@@ -82,6 +85,7 @@ class WordResponse(BaseModel):
     familiarity: Familiarity
     added_at: datetime
     statistics: WordStatistics
+    direction_statistics: dict[Direction, WordStatistics]
 
 
 class HistoryEntry(BaseModel):
@@ -200,8 +204,16 @@ def _word_response(word: VocabularyWord, at: datetime) -> WordResponse:
         tags=list(word.tags),
         familiarity=word.familiarity,
         added_at=word.added_at,
-        statistics=statistics(word.memory, at),
+        statistics=_word_statistics(word, at),
+        direction_statistics={
+            direction: statistics(memory, at) for direction, memory in word.memories.items()
+        },
     )
+
+
+def _word_statistics(word: VocabularyWord, at: datetime) -> WordStatistics:
+    """The word's headline statistics: its four directions' memories aggregated."""
+    return aggregate_statistics([word.memories[direction] for direction in Direction], at)
 
 
 def _history_entry(row: HistoryRow) -> HistoryEntry:
@@ -258,7 +270,7 @@ def list_words(
     responses = [_word_response(word, at) for word in words]
     return WordListResponse(
         words=responses,
-        summary=_summary([statistics(word.memory, at) for word in words]),
+        summary=_summary([_word_statistics(word, at) for word in words]),
     )
 
 

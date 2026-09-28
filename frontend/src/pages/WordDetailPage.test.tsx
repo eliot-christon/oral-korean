@@ -11,7 +11,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
-import { jsonResponse, wordStub } from '../testUtils'
+import { jsonResponse, NEW_WORD_STATISTICS, wordStub } from '../testUtils'
 import { WordDetailPage } from './WordDetailPage'
 
 const NOW = new Date('2026-09-26T10:00:00Z')
@@ -457,4 +457,62 @@ test('a failed delete says so and stays on the word', async () => {
   expect((await screen.findByRole('alert')).textContent).toBe('Internal Server Error')
   expect(window.location.hash).toBe('#/words/7')
   window.history.replaceState(null, '', window.location.pathname)
+})
+
+// ---------------------------------------------------------------------------------
+// Per direction (vocab-directions T05)
+// ---------------------------------------------------------------------------------
+
+function learned(score: number, nextReview: string): Record<string, unknown> {
+  return {
+    score,
+    recall: 100,
+    stability: 5,
+    difficulty: 5,
+    phase: 'review',
+    next_review: nextReview,
+    last_review: '2026-09-25T10:00:00Z',
+    due: false,
+    review_count: 1,
+    lapse_count: 0,
+  }
+}
+
+test('the headline score sits above the four direction scores, a direction never learned reading New', async () => {
+  const word = {
+    ...REVIEWED_WORD,
+    statistics: { ...learned(25, '2026-09-27T10:00:00Z'), recall: null, stability: null, difficulty: null },
+    direction_statistics: {
+      hangul_to_translation: learned(40, '2026-09-29T10:00:00Z'),
+      translation_to_hangul: learned(40, '2026-09-29T10:00:00Z'),
+      voice_to_hangul: NEW_WORD_STATISTICS,
+      voice_to_translation: learned(20, '2026-09-27T10:00:00Z'),
+    },
+  }
+  stubFetch(200, word)
+  render(<WordDetailPage id={7} />)
+  await screen.findByRole('heading', { name: 'By direction' })
+
+  expect(statistic('Score')?.value).toBe('25%')
+  expect(statistic('Hangul to translation')?.value).toBe('40%')
+  expect(statistic('Translation to Hangul')?.value).toBe('40%')
+  expect(statistic('Voice to Hangul')?.value).toBe('New')
+  expect(statistic('Voice to translation')?.value).toBe('20%')
+  expect(statistic('Voice to translation')?.term.textContent).toContain('Next review in 1 day')
+  expect(statistic('Voice to Hangul')?.term.textContent).not.toContain('Next review')
+})
+
+test('the history of one direction shows its answers and the seed, not the other directions', async () => {
+  stubFetch(200, REVIEWED_WORD)
+  render(<WordDetailPage id={7} />)
+  await screen.findByRole('heading', { name: 'History' })
+  expect(historyRows()).toHaveLength(3)
+
+  fireEvent.change(screen.getByLabelText('Show'), { target: { value: 'voice_to_hangul' } })
+
+  const rows = historyRows()
+  expect(rows).toHaveLength(2)
+  expect(rows[0].textContent).toContain('in every direction')
+  expect(rows[1].textContent).toContain('Voice to Hangul')
+  expect(rows.some((row) => row.textContent?.includes('Translation to Hangul'))).toBe(false)
 })

@@ -6,21 +6,28 @@ module-length limit. Written before the implementation; the contract:
 
 - **Migration 2**, appended to `database.MIGRATIONS`: nullable `direction TEXT`,
   `answer_mode TEXT` and `correct INTEGER` (0 or 1) columns on `reviews`, null on every row
-  that existed before it (seeds). It is the first migration to run on the user's real data,
-  so it is tested on a file written at version 1 by `Database(path, migrations=MIGRATIONS[:1])`
-  and a `WordStore` over it.
+  that existed before it (seeds). Tested in `test_storage_migration.py`.
 - `words.AnswerContext` (frozen): `direction: Direction`, `mode: AnswerMode`, `correct: bool` -
   what an answered review adds to its history row.
 - `words.HistoryRow` (frozen): `record: ReviewRecord`, `answer: AnswerContext | None` (`None`
   for a seed). `WordStore.history` returns these.
-- `WordStore.record_answer(word_id, state, record, answer) -> bool`: the word's new memory state
-  and its history row in one transaction; `False`, with nothing written, when the word no
-  longer exists; any other failure raises (`sqlite3.Error`) and leaves neither written.
-- `WordStore.new_words(*, tag=None, limit) -> tuple[VocabularyWord, ...]`: the words with no
-  memory state, oldest first (`added_at`, then id), filtered by exact tag, capped.
-- `WordStore.due_words(at, *, tag=None, limit) -> tuple[VocabularyWord, ...]`: the words whose
-  next review is at or before `at`, most overdue first (next review, then id), filtered by
-  exact tag, capped.
+
+vocab-directions T01 gives each word one memory per direction (`VocabularyWord.memories`, rows
+of `direction_memories`, one per direction that has a memory), and:
+
+- `add_words`: a seeded entry gives all four directions the seed state, and writes **one** seed
+  row, with a null direction.
+- `WordStore.record_answer(word_id, state, record, answer) -> bool`: `state` becomes the memory
+  of `answer.direction` **only**, written with its history row in one transaction; `False`,
+  with nothing written, when the word no longer exists; any other failure raises
+  (`sqlite3.Error`) and leaves neither written.
+- `WordStore.new_words(*, tag=None, directions=tuple(Direction), limit)`: the words with at
+  least one direction among `directions` that has no memory, oldest first (`added_at`, then
+  id), filtered by exact tag, capped.
+- `WordStore.due_words(at, *, tag=None, directions=tuple(Direction), limit)`: the words with at
+  least one direction among `directions` whose memory is due at `at` (`next_review <= at`),
+  ordered by the earliest such due instant, then id, filtered by exact tag, capped.
+- The six word-level memory columns migration 1 put on `words` are never written again.
 
 A failure half-way through `record_answer` is injected with a SQLite trigger created on the
 test's own file (`RAISE(ABORT)` on one of the two writes), not by patching a private helper:
@@ -35,17 +42,26 @@ from __future__ import annotations
 
 import dataclasses
 import sqlite3
-from datetime import timedelta
+from contextlib import closing
+from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from test_storage import T0, build_store, seed_pair, word
 
 from oral_korean.exercises.vocab import AnswerMode, Direction
-from oral_korean.exercises.vocab_words import make_draft
-from oral_korean.srs.memory import Familiarity, Grade, apply_grade
-from oral_korean.storage.database import MIGRATIONS, Database
+from oral_korean.exercises.vocab_words import VocabularyWord, make_draft, same_memory
+from oral_korean.srs.memory import Familiarity, Grade, MemoryState, apply_grade
+from oral_korean.storage.database import Database
 from oral_korean.storage.words import AnswerContext, HistoryRow, WordStore
+
+type _Row = tuple[Any, ...]
+
+H2T = Direction.HANGUL_TO_TRANSLATION
+T2H = Direction.TRANSLATION_TO_HANGUL
+V2H = Direction.VOICE_TO_HANGUL
+V2T = Direction.VOICE_TO_TRANSLATION
 
 
 def typed_right() -> AnswerContext:
@@ -79,61 +95,87 @@ def test_the_answer_context_values_are_frozen_with_their_agreed_fields() -> None
             setattr(value, name, None)
 
 
-def test_migration_2_upgrades_a_version_1_file_keeping_every_word_state_and_seed(
+# Migration 2's own tests moved to `test_storage_migration.py` with vocab-directions T01: they
+# wrote a version-1 file through `WordStore`, which now writes a table version 1 does not have.
+
+
+# ---------------------------------------------------------------------------------
+# Adding a seeded word: every direction, one seed row
+# ---------------------------------------------------------------------------------
+
+
+def memory_rows(path: Path, word_id: int) -> list[_Row]:
+    """A word's `direction_memories` rows, the direction first, in direction order."""
+    with closing(sqlite3.connect(path)) as raw:
+        rows: list[_Row] = raw.execute(
+            "SELECT direction, stability, difficulty, next_review, last_review, review_count, "
+            "lapse_count FROM direction_memories WHERE word_id = ? ORDER BY direction",
+            (word_id,),
+        ).fetchall()
+    return rows
+
+
+def old_memory_columns(path: Path, word_id: int) -> _Row:
+    """The six word-level memory columns migration 1 created, which nothing writes any more."""
+    with closing(sqlite3.connect(path)) as raw:
+        row: _Row = raw.execute(
+            "SELECT stability, difficulty, next_review, last_review, review_count, lapse_count "
+            "FROM words WHERE id = ?",
+            (word_id,),
+        ).fetchone()
+    return row
+
+
+def test_a_word_seeded_very_well_has_the_seed_in_all_four_directions_and_one_seed_row(
     tmp_path: Path,
 ) -> None:
-    """The user's real file is at version 1: two words written at version 1, one new and one
-    seeded, must come through the upgrade exactly, the seed row with a null answer context
-    in all three new columns.
-    """
+    """The seed is knowledge the user brought, the same whichever way the word is asked; the
+    history says it once, with no direction, meaning all of them."""
     path = tmp_path / "oral-korean.sqlite3"
-    version_1 = Database(path, migrations=MIGRATIONS[:1])
-    state, record = seed_pair(Familiarity.WELL)
-    new_draft = make_draft(word(80), "apple", ["food"], Familiarity.NEW)
-    seeded_draft = make_draft(word(81), "pear", ["fruit"], Familiarity.WELL)
-    before = WordStore(version_1).add_words(
-        [(new_draft, None), (seeded_draft, (state, record))], T0
-    )
-    with version_1.transaction() as conn:
-        version_before = conn.execute("PRAGMA user_version").fetchone()[0]
-
-    upgraded = Database(path)
-    store = WordStore(upgraded)
-    words_after = store.list_words()
-    with upgraded.transaction() as conn:
-        version_after = conn.execute("PRAGMA user_version").fetchone()[0]
-        answer_columns = conn.execute(
-            "SELECT direction, answer_mode, correct FROM reviews"
-        ).fetchall()
-
-    assert version_before == 1
-    assert len(MIGRATIONS) >= 2
-    assert version_after == len(MIGRATIONS)
-    assert words_after == before
-    assert words_after[0].memory is None
-    assert words_after[1].memory == state
-    assert store.history(before[1].id) == (HistoryRow(record=record, answer=None),)
-    assert not store.history(before[0].id)
-    assert answer_columns == [(None, None, None)]
-
-
-def test_a_migrated_file_records_an_answer_after_its_seed(tmp_path: Path) -> None:
-    """The upgraded file is usable, not merely readable: the seeded word takes an answer."""
-    path = tmp_path / "oral-korean.sqlite3"
-    state, seed_record = seed_pair(Familiarity.WELL)
-    draft = make_draft(word(82), "pear", [], Familiarity.WELL)
-    (added,) = WordStore(Database(path, migrations=MIGRATIONS[:1])).add_words(
-        [(draft, (state, seed_record))], T0
-    )
     store = WordStore(Database(path))
-    after, record = apply_grade(state, Grade.GOOD, state.next_review, fuzzing=False)
+    state, record = seed_pair(Familiarity.VERY_WELL)
+    draft = make_draft(word(87), "a", [], Familiarity.VERY_WELL)
 
-    assert store.record_answer(added.id, after, record, typed_right()) is True
+    (added,) = store.add_words([(draft, (state, record))], T0)
 
-    assert store.history(added.id) == (
-        HistoryRow(record=seed_record, answer=None),
-        HistoryRow(record=record, answer=typed_right()),
+    assert dict(added.memories) == same_memory(state)
+    assert store.get_word(added.id) == added
+    assert store.history(added.id) == (HistoryRow(record=record, answer=None),)
+    with closing(sqlite3.connect(path)) as raw:
+        directions = raw.execute(
+            "SELECT direction FROM reviews WHERE word_id = ?", (added.id,)
+        ).fetchall()
+    assert directions == [(None,)]
+    assert len(memory_rows(path, added.id)) == 4
+
+
+def test_a_new_word_has_no_memory_row_and_nothing_in_the_old_columns(tmp_path: Path) -> None:
+    """A direction without memory has no row; the retired word-level columns stay null."""
+    path = tmp_path / "oral-korean.sqlite3"
+    store = WordStore(Database(path))
+
+    (added,) = store.add_words([(make_draft(word(88), "a", [], Familiarity.NEW), None)], T0)
+
+    assert dict(added.memories) == same_memory(None)
+    assert not memory_rows(path, added.id)
+    assert old_memory_columns(path, added.id) == (None,) * 6
+
+
+def test_seeding_and_answering_never_write_the_old_word_level_columns(tmp_path: Path) -> None:
+    """From migration 3 on, the six columns on `words` are dead: neither a seed nor an answer
+    writes them, so nothing can come to read a stale figure from them."""
+    path = tmp_path / "oral-korean.sqlite3"
+    store = WordStore(Database(path))
+    seeded_state, seed_record = seed_pair(Familiarity.WELL)
+    draft = make_draft(word(89), "a", [], Familiarity.WELL)
+    (added,) = store.add_words([(draft, (seeded_state, seed_record))], T0)
+    state, record = apply_grade(
+        seeded_state, Grade.GOOD, seeded_state.next_review, fuzzing=False
     )
+
+    store.record_answer(added.id, state, record, typed_right())
+
+    assert old_memory_columns(path, added.id) == (None,) * 6
 
 
 # ---------------------------------------------------------------------------------
@@ -167,7 +209,8 @@ def test_a_migrated_file_records_an_answer_after_its_seed(tmp_path: Path) -> Non
 def test_recording_an_answer_writes_the_state_and_the_history_row(
     tmp_path: Path, direction: Direction, mode: AnswerMode, correct: bool
 ) -> None:
-    """Every direction and both modes, right and wrong, read back as they were recorded."""
+    """Every direction and both modes, right and wrong, read back as they were recorded: the
+    state lands in the direction answered, and a new word's other three stay without memory."""
     store = build_store(tmp_path)
     (added,) = store.add_words([(make_draft(word(83), "a", [], Familiarity.NEW), None)], T0)
     grade = Grade.HARD if correct else Grade.AGAIN
@@ -179,7 +222,7 @@ def test_recording_an_answer_writes_the_state_and_the_history_row(
     assert result is True
     fetched = store.get_word(added.id)
     assert fetched is not None
-    assert fetched.memory == state
+    assert dict(fetched.memories) == {**same_memory(None), direction: state}
     assert store.history(added.id) == (HistoryRow(record=record, answer=context),)
 
 
@@ -204,7 +247,57 @@ def test_an_answer_after_a_seed_is_listed_after_it(tmp_path: Path) -> None:
     )
     fetched = store.get_word(added.id)
     assert fetched is not None
-    assert fetched.memory == state
+    assert dict(fetched.memories) == {**same_memory(seeded_state), V2T: state}
+
+
+@pytest.mark.parametrize("answered", list(Direction), ids=[d.value for d in Direction])
+def test_an_answer_changes_its_direction_and_leaves_the_other_three_byte_identical(
+    tmp_path: Path, answered: Direction
+) -> None:
+    """Seeded `well`, answered good on its due date in one direction: that memory moves, and
+    the other three rows are untouched to the byte, not merely equal once read back."""
+    path = tmp_path / "oral-korean.sqlite3"
+    store = WordStore(Database(path))
+    seeded_state, seed_record = seed_pair(Familiarity.WELL)
+    draft = make_draft(word(109), "a", [], Familiarity.WELL)
+    (added,) = store.add_words([(draft, (seeded_state, seed_record))], T0)
+    others_before = [row for row in memory_rows(path, added.id) if row[0] != answered.value]
+    state, record = apply_grade(
+        seeded_state, Grade.GOOD, seeded_state.next_review, fuzzing=False
+    )
+    context = AnswerContext(direction=answered, mode=AnswerMode.TYPING, correct=True)
+
+    assert store.record_answer(added.id, state, record, context) is True
+
+    fetched = store.get_word(added.id)
+    assert fetched is not None
+    assert fetched.memories[answered] == state != seeded_state
+    assert {d: m for d, m in fetched.memories.items() if d is not answered} == {
+        d: seeded_state for d in Direction if d is not answered
+    }
+    others_after = [row for row in memory_rows(path, added.id) if row[0] != answered.value]
+    assert len(others_before) == 3
+    assert others_after == others_before
+
+
+def test_answers_in_two_directions_build_two_independent_memories(tmp_path: Path) -> None:
+    """A new word, right in one direction and wrong in another: each memory is its own
+    history, and neither answer reaches the direction it was not asked in."""
+    store = build_store(tmp_path)
+    (added,) = store.add_words([(make_draft(word(110), "a", [], Familiarity.NEW), None)], T0)
+    right, right_record = apply_grade(None, Grade.HARD, T0, fuzzing=False)
+    wrong, wrong_record = apply_grade(None, Grade.AGAIN, T0 + timedelta(hours=1), fuzzing=False)
+
+    store.record_answer(
+        added.id, right, right_record, AnswerContext(H2T, AnswerMode.CHOICE, correct=True)
+    )
+    store.record_answer(
+        added.id, wrong, wrong_record, AnswerContext(V2H, AnswerMode.CHOICE, correct=False)
+    )
+
+    fetched = store.get_word(added.id)
+    assert fetched is not None
+    assert dict(fetched.memories) == {H2T: right, T2H: None, V2H: wrong, V2T: None}
 
 
 def test_recording_an_answer_for_a_deleted_word_reports_it_missing_and_writes_nothing(
@@ -236,27 +329,36 @@ def test_recording_an_answer_for_an_id_never_stored_reports_it_missing(tmp_path:
     assert not store.history(999)
 
 
+def failing_trigger(name: str, event: str) -> str:
+    """A trigger that aborts every `event` (`INSERT ON reviews`, ...) with an injected error."""
+    return (
+        f"CREATE TRIGGER {name} BEFORE {event} "
+        "BEGIN SELECT RAISE(ABORT, 'injected failure'); END"
+    )
+
+
 @pytest.mark.parametrize(
-    "trigger",
+    "triggers",
     [
         pytest.param(
-            "CREATE TRIGGER injected_failure BEFORE INSERT ON reviews "
-            "BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
-            id="history-row-write-fails",
+            [failing_trigger("no_review", "INSERT ON reviews")], id="history-row-write-fails"
         ),
         pytest.param(
-            "CREATE TRIGGER injected_failure BEFORE UPDATE ON words "
-            "BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+            [
+                failing_trigger("no_memory_insert", "INSERT ON direction_memories"),
+                failing_trigger("no_memory_update", "UPDATE ON direction_memories"),
+            ],
             id="memory-state-write-fails",
         ),
     ],
 )
 def test_a_failure_half_way_through_recording_leaves_neither_write(
-    tmp_path: Path, trigger: str
+    tmp_path: Path, triggers: list[str]
 ) -> None:
     """Whichever of the two writes fails, the other is rolled back with it, and the failure
     is raised rather than reported as a missing word. A trigger fails the real statement, so
-    the test holds whatever order the implementation writes in.
+    the test holds whatever order the implementation writes in, and whether it updates the
+    direction's row or replaces it.
     """
     database = Database(tmp_path / "oral-korean.sqlite3")
     store = WordStore(database)
@@ -264,7 +366,8 @@ def test_a_failure_half_way_through_recording_leaves_neither_write(
     draft = make_draft(word(86), "a", [], Familiarity.WELL)
     (added,) = store.add_words([(draft, (seeded_state, seed_record))], T0)
     with database.transaction() as conn:
-        conn.execute(trigger)
+        for trigger in triggers:
+            conn.execute(trigger)
     state, record = apply_grade(
         seeded_state, Grade.GOOD, seeded_state.next_review, fuzzing=False
     )
@@ -274,7 +377,7 @@ def test_a_failure_half_way_through_recording_leaves_neither_write(
 
     fetched = store.get_word(added.id)
     assert fetched is not None
-    assert fetched.memory == seeded_state
+    assert dict(fetched.memories) == same_memory(seeded_state)
     assert store.history(added.id) == (HistoryRow(record=seed_record, answer=None),)
 
 
@@ -283,9 +386,10 @@ def test_a_failure_half_way_through_recording_leaves_neither_write(
 # ---------------------------------------------------------------------------------
 
 
-def test_new_words_are_the_words_with_no_memory_oldest_first(tmp_path: Path) -> None:
-    """A word stored first but added at a later instant sorts by its instant, not its id;
-    a seeded word is never new.
+def test_new_words_are_the_words_with_no_memory_in_learn_queue_order(tmp_path: Path) -> None:
+    """A word joins the learn queue when it is stored, whatever instant it is added at
+    (vocab-directions T03; before it, new words sorted by that instant); a seeded word is
+    never new.
     """
     store = build_store(tmp_path)
     (later,) = store.add_words(
@@ -302,7 +406,7 @@ def test_new_words_are_the_words_with_no_memory_oldest_first(tmp_path: Path) -> 
 
     new = store.new_words(limit=10)
 
-    assert new == (earlier_a, earlier_b, later)
+    assert new == (later, earlier_a, earlier_b)
     assert seeded_word not in new
 
 
@@ -431,3 +535,137 @@ def test_due_words_are_filtered_by_exact_tag_and_capped(tmp_path: Path) -> None:
     assert store.due_words(at, tag="food", limit=1) == (food_earlier,)
     assert store.due_words(at, limit=1) == (untagged,)
     assert not store.due_words(at, tag="Food", limit=10)
+
+
+# ---------------------------------------------------------------------------------
+# The pools, per direction (vocab-directions T01)
+# ---------------------------------------------------------------------------------
+
+
+def answer_in(
+    store: WordStore, word_id: int, direction: Direction, grade: Grade, at: datetime
+) -> MemoryState:
+    """Answer the stored word in `direction` at `at`, graded `grade`; its new state there."""
+    found = store.get_word(word_id)
+    assert found is not None
+    state, record = apply_grade(found.memories[direction], grade, at, fuzzing=False)
+    context = AnswerContext(direction, AnswerMode.CHOICE, correct=grade is not Grade.AGAIN)
+    assert store.record_answer(word_id, state, record, context) is True
+    return state
+
+
+def new_word_answered_in(
+    store: WordStore, number: int, directions: tuple[Direction, ...]
+) -> VocabularyWord:
+    """A word added new at T0, then answered right by choice at T0 in each of `directions`."""
+    (added,) = store.add_words(
+        [(make_draft(word(number), f"w{number}", [], Familiarity.NEW), None)], T0
+    )
+    for direction in directions:
+        answer_in(store, added.id, direction, Grade.HARD, T0)
+    return added
+
+
+def ids(words: tuple[VocabularyWord, ...]) -> list[int]:
+    return [found.id for found in words]
+
+
+def test_new_words_are_the_words_missing_a_memory_in_a_ticked_direction(
+    tmp_path: Path,
+) -> None:
+    """Ticking hangul-to-translation alone: a word learned in every other direction is still
+    to learn, one learned in all four is not, and nor is one learned in that direction only,
+    however much it lacks elsewhere. With every direction ticked, anything missing one is new.
+    """
+    store = build_store(tmp_path)
+    all_but_h2t = new_word_answered_in(store, 120, (T2H, V2H, V2T))
+    all_four = new_word_answered_in(store, 121, (H2T, T2H, V2H, V2T))
+    only_h2t = new_word_answered_in(store, 122, (H2T,))
+    never = new_word_answered_in(store, 123, ())
+
+    assert ids(store.new_words(directions={H2T}, limit=10)) == [all_but_h2t.id, never.id]
+    assert ids(store.new_words(limit=10)) == [all_but_h2t.id, only_h2t.id, never.id]
+    assert all_four.id not in ids(store.new_words(limit=10))
+
+
+def test_new_words_read_back_with_every_direction_as_stored(tmp_path: Path) -> None:
+    """The pool returns whole words, their learned directions included, not the missing ones
+    alone: the session scores against these memories."""
+    store = build_store(tmp_path)
+    partly = new_word_answered_in(store, 124, (V2T,))
+
+    (found,) = store.new_words(directions={H2T}, limit=10)
+
+    assert found == store.get_word(partly.id)
+    assert found.memories[V2T] is not None
+
+
+def test_due_words_are_the_words_with_a_ticked_direction_due(tmp_path: Path) -> None:
+    """Seeded `a_little` (all four due a day later), then three directions answered on that
+    day: only voice-to-Hangul is still due, so the word is due when it is ticked, and not when
+    only the other three are."""
+    store = build_store(tmp_path)
+    draft = make_draft(word(125), "a", [], Familiarity.A_LITTLE)
+    (added,) = store.add_words([(draft, seed_pair(Familiarity.A_LITTLE))], T0)
+    day = T0 + timedelta(days=1)
+    moved = [answer_in(store, added.id, d, Grade.GOOD, day) for d in (H2T, T2H, V2T)]
+    at = day + timedelta(hours=1)
+    assert all(state.next_review > at for state in moved)  # sanity: the three moved out
+
+    assert ids(store.due_words(at, directions={V2H}, limit=10)) == [added.id]
+    assert not store.due_words(at, directions={H2T, T2H, V2T}, limit=10)
+    assert ids(store.due_words(at, limit=10)) == [added.id]
+
+
+def test_a_direction_without_memory_is_never_due(tmp_path: Path) -> None:
+    """Learned in one direction and due there: never due through the three it lacks."""
+    store = build_store(tmp_path)
+    partly = new_word_answered_in(store, 126, (H2T,))
+    at = T0 + timedelta(days=30)
+
+    assert ids(store.due_words(at, directions={H2T}, limit=10)) == [partly.id]
+    assert not store.due_words(at, directions={T2H, V2H, V2T}, limit=10)
+
+
+def test_a_word_partly_learned_is_in_both_pools(tmp_path: Path) -> None:
+    """Learned one way and due there, never asked the other three ways: reviewed in the
+    first, learned in the others. Each pool reads only the directions ticked."""
+    store = build_store(tmp_path)
+    partly = new_word_answered_in(store, 127, (H2T,))
+    at = T0 + timedelta(days=1)
+
+    assert ids(store.new_words(directions={T2H}, limit=10)) == [partly.id]
+    assert ids(store.due_words(at, directions={H2T}, limit=10)) == [partly.id]
+    assert not store.new_words(directions={H2T}, limit=10)
+    assert not store.due_words(at, directions={T2H}, limit=10)
+
+
+def test_due_words_are_ordered_by_their_earliest_ticked_due_direction(tmp_path: Path) -> None:
+    """`later` is seeded `a_little` (all due a day after T0) and missed in translation-to-Hangul
+    an hour into that day, which brings that direction back a day on, after `well`'s two-day
+    seed. Ticking translation-to-Hangul alone, `well` comes first; ticking anything that
+    includes one of `later`'s untouched directions, `later` does: its own earliest due
+    direction outside the ticked ones never counts.
+    """
+    store = build_store(tmp_path)
+    well_state, well_record = seed_pair(Familiarity.WELL)
+    well, later = store.add_words(
+        [
+            (make_draft(word(128), "well", [], Familiarity.WELL), (well_state, well_record)),
+            (
+                make_draft(word(129), "later", [], Familiarity.A_LITTLE),
+                seed_pair(Familiarity.A_LITTLE),
+            ),
+        ],
+        T0,
+    )
+    missed = answer_in(
+        store, later.id, T2H, Grade.AGAIN, T0 + timedelta(days=1, hours=1)
+    )
+    assert well_state.next_review < missed.next_review  # sanity on the two dates
+    at = T0 + timedelta(days=3)
+
+    assert ids(store.due_words(at, directions={T2H}, limit=10)) == [well.id, later.id]
+    assert ids(store.due_words(at, directions={T2H}, limit=1)) == [well.id]
+    assert ids(store.due_words(at, directions={H2T}, limit=10)) == [later.id, well.id]
+    assert ids(store.due_words(at, limit=10)) == [later.id, well.id]

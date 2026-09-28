@@ -36,6 +36,12 @@ methods (`record_answer`, `new_words`, `due_words`): their signatures are pinned
 below, their behaviour in `test_storage_reviews.py`, split off to keep this file under
 pylint's module-length limit.
 
+`vocab-directions` T01 gives every word one memory per `Direction` (`VocabularyWord.memories`,
+stored in a `direction_memories` table), a keyword-only `directions` filter on `new_words` and
+`due_words`, and migration 3, the first Python step in `MIGRATIONS` (a callable taking the open
+connection, so `migrations` accepts both kinds). Migrations are tested in
+`test_storage_migration.py`, per-direction answers and pools in `test_storage_reviews.py`.
+
 Decisions taken here that the ticket leaves open, flagged in the hand-back report:
 
 1. **`DuplicateWordError(korean: str)`**: one positional parameter, pinned by a signature
@@ -79,7 +85,12 @@ from conftest import signature_shape
 
 import oral_korean.config
 from oral_korean.config import AppConfig
-from oral_korean.exercises.vocab_words import VocabularyWord, make_draft
+from oral_korean.exercises.vocab_words import (
+    Direction,
+    VocabularyWord,
+    make_draft,
+    same_memory,
+)
 from oral_korean.srs.memory import (
     Familiarity,
     Grade,
@@ -126,10 +137,18 @@ class _Boom(Exception):
 
 
 def test_migrations_is_a_non_empty_tuple_of_sql_scripts() -> None:
-    """At least migration 1 (the words schema) exists, each script a non-blank string."""
+    """Each step is a non-blank SQL script or a Python callable taking the open connection
+    (vocab-directions T01): migrations 1 and 2 stay the SQL they shipped as, and migration 3,
+    which replays history through `srs/`, is the first Python step."""
     assert isinstance(MIGRATIONS, tuple)
-    assert len(MIGRATIONS) >= 1
-    assert all(isinstance(script, str) and script.strip() for script in MIGRATIONS)
+    assert len(MIGRATIONS) >= 3
+    assert all(
+        (isinstance(step, str) and step.strip()) or callable(step) for step in MIGRATIONS
+    )
+    assert isinstance(MIGRATIONS[0], str)
+    assert isinstance(MIGRATIONS[1], str)
+    assert callable(MIGRATIONS[2])
+    assert not isinstance(MIGRATIONS[2], str)
 
 
 def test_schema_version_error_is_a_runtime_error() -> None:
@@ -211,10 +230,16 @@ def test_the_project_root_is_computed_exactly_once_in_config() -> None:
             id="WordStore.record_answer",
         ),
         pytest.param(
-            WordStore.new_words, ["self"], ["tag", "limit"], id="WordStore.new_words"
+            WordStore.new_words,
+            ["self"],
+            ["tag", "directions", "limit"],
+            id="WordStore.new_words",
         ),
         pytest.param(
-            WordStore.due_words, ["self", "at"], ["tag", "limit"], id="WordStore.due_words"
+            WordStore.due_words,
+            ["self", "at"],
+            ["tag", "directions", "limit"],
+            id="WordStore.due_words",
         ),
     ],
 )
@@ -348,6 +373,11 @@ def test_deleting_a_word_cascades_to_its_tag_rows_and_history_rows(tmp_path: Pat
     draft = make_draft(word(1), "a", ["food", "fruit"], Familiarity.WELL)
     (added,) = store.add_words([(draft, seed_pair(Familiarity.WELL))], T0)
 
+    with sqlite3.connect(path) as raw:
+        memory_rows_before = raw.execute(
+            "SELECT COUNT(*) FROM direction_memories WHERE word_id = ?", (added.id,)
+        ).fetchone()[0]
+
     assert store.delete_word(added.id) is True
 
     with sqlite3.connect(path) as raw:
@@ -357,7 +387,11 @@ def test_deleting_a_word_cascades_to_its_tag_rows_and_history_rows(tmp_path: Pat
         review_rows = raw.execute(
             "SELECT COUNT(*) FROM reviews WHERE word_id = ?", (added.id,)
         ).fetchone()[0]
-    assert (tag_rows, review_rows) == (0, 0)
+        memory_rows = raw.execute(
+            "SELECT COUNT(*) FROM direction_memories WHERE word_id = ?", (added.id,)
+        ).fetchone()[0]
+    assert memory_rows_before == 4  # sanity: a seed gives all four directions a memory
+    assert (tag_rows, review_rows, memory_rows) == (0, 0, 0)
 
 
 # ---------------------------------------------------------------------------------
@@ -381,7 +415,7 @@ def test_adding_a_new_word_returns_it_with_an_id_and_no_memory(tmp_path: Path) -
     assert added.tags == ("food", "fruit")
     assert added.familiarity is Familiarity.NEW
     assert added.added_at == T0
-    assert added.memory is None
+    assert dict(added.memories) == same_memory(None)
     assert store.get_word(added.id) == added
 
 
@@ -395,7 +429,7 @@ def test_adding_a_word_seeded_well_reads_back_the_seeded_memory_exactly(
 
     (added,) = store.add_words([(draft, (state, record))], T0)
 
-    assert added.memory == state
+    assert dict(added.memories) == same_memory(state)
     history = store.history(added.id)
     assert [row.record for row in history] == [record]
     assert history[0].record.is_seed is True
@@ -408,11 +442,13 @@ def test_a_stored_memory_state_can_be_graded_again_without_error(tmp_path: Path)
     state, record = seed_pair(Familiarity.WELL)
     draft = make_draft(word(4), "a", [], Familiarity.WELL)
     (added,) = store.add_words([(draft, (state, record))], T0)
-    assert added.memory is not None
 
-    after, _ = apply_grade(added.memory, Grade.GOOD, added.memory.next_review, fuzzing=False)
+    for direction in Direction:
+        stored = added.memories[direction]
+        assert stored is not None
+        after, _ = apply_grade(stored, Grade.GOOD, stored.next_review, fuzzing=False)
 
-    assert after.stability > 0
+        assert after.stability > 0
 
 
 @pytest.mark.parametrize(
@@ -430,7 +466,7 @@ def test_a_datetime_round_trips_exactly_at_its_microsecond(
     (added,) = store.add_words([(draft, (state, record))], at)
 
     assert added.added_at == at
-    assert added.memory == state
+    assert dict(added.memories) == same_memory(state)
 
 
 def test_a_batch_of_three_returns_distinct_ids_and_lists_in_batch_order(
@@ -504,9 +540,11 @@ def test_stored_datetimes_read_back_aware_with_the_utc_object(tmp_path: Path) ->
     (added,) = store.add_words([(draft, (state, record))], T0)
 
     assert added.added_at.tzinfo is UTC
-    assert added.memory is not None
-    assert added.memory.next_review.tzinfo is UTC
-    assert added.memory.last_review.tzinfo is UTC
+    for direction in Direction:
+        stored = added.memories[direction]
+        assert stored is not None
+        assert stored.next_review.tzinfo is UTC
+        assert stored.last_review.tzinfo is UTC
     history_record = store.history(added.id)[0].record
     assert history_record.reviewed_at.tzinfo is UTC
     assert history_record.next_review.tzinfo is UTC
@@ -582,7 +620,7 @@ def test_update_word_changes_the_editable_fields_and_leaves_the_rest_untouched(
     assert updated.tags == ("fruit",)
     assert updated.familiarity == added.familiarity
     assert updated.added_at == added.added_at
-    assert updated.memory == added.memory
+    assert updated.memories == added.memories
     assert store.history(added.id) == history_before
     assert store.get_word(added.id) == updated
 
