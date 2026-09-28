@@ -78,6 +78,14 @@ REQUIRED_NUMBERS_PATHS = (
     f"/api/exercises/numbers/questions/{PARAM_MARKER}/answer",
 )
 
+# time-exercise T05: the clock exercise's levels catalogue, create-question and answer
+# paths. Its audio path is left out for the same reason as the numbers one.
+REQUIRED_TIME_PATHS = (
+    "/api/exercises/time/levels",
+    "/api/exercises/time/questions",
+    f"/api/exercises/time/questions/{PARAM_MARKER}/answer",
+)
+
 # vocab-words-ui T02: the word list (and, T03, adding one word), one word with its history
 # (and, T03, editing and deleting it: same path, other methods, which a literal cannot tell
 # apart), and the tags for the filter. T03: a pasted list, and the familiarity catalogue.
@@ -127,6 +135,16 @@ def test_the_required_numbers_paths_are_referenced_somewhere_in_the_frontend() -
     frontend_literals = frontend_api_literals()
 
     missing = [path for path in REQUIRED_NUMBERS_PATHS if path not in frontend_literals]
+
+    assert not missing, f"frontend/src/ does not yet reference: {missing}"
+
+
+def test_the_required_time_paths_are_referenced_somewhere_in_the_frontend() -> None:
+    """`frontend/src/` must actually call the clock exercise's levels catalogue,
+    create-question and answer routes."""
+    frontend_literals = frontend_api_literals()
+
+    missing = [path for path in REQUIRED_TIME_PATHS if path not in frontend_literals]
 
     assert not missing, f"frontend/src/ does not yet reference: {missing}"
 

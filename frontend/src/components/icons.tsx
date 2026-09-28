@@ -83,6 +83,16 @@ export function KeypadIcon({ className = 'size-6' }: { className?: string }) {
   )
 }
 
+/** A clock face: the clock exercise, in the navigation. */
+export function ClockIcon({ className = 'size-6' }: { className?: string }) {
+  return (
+    <Svg className={className}>
+      <circle cx={12} cy={12} r={8.5} />
+      <path d="M12 7v5l3.5 2" />
+    </Svg>
+  )
+}
+
 /** An open book: the vocabulary, in the navigation. */
 export function BookIcon({ className = 'size-6' }: { className?: string }) {
   return (
