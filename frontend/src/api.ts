@@ -138,6 +138,14 @@ export type Direction =
   | 'voice_to_hangul'
   | 'voice_to_translation'
 
+/** The four directions, in the backend's order: the order every per-direction list follows. */
+export const DIRECTIONS: Direction[] = [
+  'hangul_to_translation',
+  'translation_to_hangul',
+  'voice_to_hangul',
+  'voice_to_translation',
+]
+
 export type AnswerMode = 'choice' | 'typing'
 
 /**
@@ -165,7 +173,14 @@ export interface Word {
   tags: string[]
   familiarity: Familiarity
   added_at: string
+  /**
+   * The word as a whole: the four directions' memories together. The score is the mean of
+   * their strengths (a direction not learned yet counts 0), and recall, stability and
+   * difficulty, which belong to one direction, are null.
+   */
   statistics: WordStatistics
+  /** Each direction's own memory, all four always present. */
+  direction_statistics: Record<Direction, WordStatistics>
 }
 
 /**
@@ -346,6 +361,64 @@ export interface StartSessionParams {
   directions: Direction[]
   /** Omitted for the backend's default. */
   size?: number
+  /** A review's chosen words, in order: it takes the first `size`. Never for a learn session. */
+  word_ids?: number[]
+}
+
+/** A word as the learn queue and the review picker list it. */
+export interface QueuedWord {
+  id: number
+  korean: string
+  translations: string[]
+  tags: string[]
+}
+
+/** A word the review picker offers: whether it is due, and its earliest next review. */
+export interface ReviewCandidate extends QueuedWord {
+  due: boolean
+  next_review: string
+}
+
+/** The query string naming a tag (or none) and the ticked directions, `?` included. */
+function batchQuery(tag: string | null, directions: Direction[]): string {
+  const query = new URLSearchParams()
+  if (tag !== null) {
+    query.set('tag', tag)
+  }
+  for (const direction of directions) {
+    query.append('directions', direction)
+  }
+  return `?${query.toString()}`
+}
+
+/** The words a learn session can take, for `tag` and the ticked directions, in queue order. */
+export async function fetchLearnQueue(tag: string | null, directions: Direction[]): Promise<QueuedWord[]> {
+  const response = await fetch('/api/vocab/learn-queue' + batchQuery(tag, directions))
+  const body = await parseJsonOrThrow<{ words: QueuedWord[] }>(response, 'Could not load the learn queue.')
+  return body.words
+}
+
+/**
+ * Moves these words to the top of the learn queue, in this order; every other word keeps
+ * its order after them. Resolves to the whole queue as stored; a refusal is a `422` `ApiError`.
+ */
+export async function reorderLearnQueue(wordIds: number[]): Promise<QueuedWord[]> {
+  const response = await sendJson('/api/vocab/learn-queue', 'PUT', { word_ids: wordIds })
+  const body = await parseJsonOrThrow<{ words: QueuedWord[] }>(response, 'Could not save the new order.')
+  return body.words
+}
+
+/** Every word learned in a ticked direction: the due ones first, then the others, soonest first. */
+export async function fetchReviewCandidates(
+  tag: string | null,
+  directions: Direction[],
+): Promise<ReviewCandidate[]> {
+  const response = await fetch('/api/vocab/review-candidates' + batchQuery(tag, directions))
+  const body = await parseJsonOrThrow<{ words: ReviewCandidate[] }>(
+    response,
+    'Could not load the words to review.',
+  )
+  return body.words
 }
 
 export interface StartSessionResponse {
@@ -355,10 +428,15 @@ export interface StartSessionResponse {
   directions: Direction[]
 }
 
-/** Words whose scored question has been answered, out of the session's words. */
+/**
+ * Words whose every scored question has been answered, out of the session's words, and the
+ * same in scored questions. It never says which word a question is about.
+ */
 export interface SessionProgress {
   done: number
   total: number
+  questions_done: number
+  question_total: number
 }
 
 /** A new word shown openly before it is asked. */
@@ -387,10 +465,18 @@ export interface Question {
   progress: SessionProgress
 }
 
+/** How a word's scored attempt went in one direction. */
+export interface DirectionResult {
+  direction: Direction
+  correct: boolean
+}
+
+/** A word's scored attempts: `correct` only if every direction asked was right. */
 export interface SummaryWord {
   korean: string
   translations: string[]
   correct: boolean
+  directions: DirectionResult[]
 }
 
 export interface SessionEnd {
@@ -399,6 +485,8 @@ export interface SessionEnd {
     words: SummaryWord[]
     word_count: number
     correct_count: number
+    question_count: number
+    correct_question_count: number
   }
 }
 
@@ -408,8 +496,9 @@ export type SessionItem = Presentation | Question | SessionEnd
 export type SessionAnswer = { answer: string } | { choice: number } | { dont_know: true }
 
 /**
- * The verdict, and the word whichever way it went. The statistics are null when the word
- * was deleted meanwhile; for a practice answer, before and after are the same.
+ * The verdict, and the word whichever way it went. The statistics are those of the direction
+ * asked, null when the word was deleted meanwhile; for a practice answer, before and after
+ * are the same.
  */
 export interface SessionVerdict {
   correct: boolean

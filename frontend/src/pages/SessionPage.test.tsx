@@ -17,7 +17,7 @@ import { SessionPage } from './SessionPage'
 
 const NOW = new Date('2026-09-26T10:00:00Z')
 
-const PROGRESS = { done: 0, total: 2 }
+const PROGRESS = { done: 0, total: 2, questions_done: 0, question_total: 2 }
 
 const PRESENTATION = {
   type: 'presentation',
@@ -111,13 +111,28 @@ const END = {
   type: 'end',
   summary: {
     words: [
-      { korean: '사과', translations: ['apple', 'pomme'], correct: false },
-      { korean: '배', translations: ['pear'], correct: true },
+      {
+        korean: '사과',
+        translations: ['apple', 'pomme'],
+        correct: false,
+        directions: [{ direction: 'hangul_to_translation', correct: false }],
+      },
+      {
+        korean: '배',
+        translations: ['pear'],
+        correct: true,
+        directions: [{ direction: 'hangul_to_translation', correct: true }],
+      },
     ],
     word_count: 2,
     correct_count: 1,
+    question_count: 2,
+    correct_question_count: 1,
   },
 }
+
+/** The one word of the start form's learn queue and review picker (vocab-directions T04). */
+const QUEUED = { id: 7, korean: '포도', translations: ['grape'], tags: [] }
 
 type Reply = { status: number; body: unknown } | Promise<{ status: number; body: unknown }>
 
@@ -138,6 +153,10 @@ function stubFetch(stub: Stub): ReturnType<typeof vi.fn> {
       reply = { status: 200, body: { tags: [{ tag: 'food', count: 2 }] } }
     } else if (url.startsWith('/api/vocab/words')) {
       reply = { status: 200, body: { words: [], summary: { total: 3, new: 2, due: 1, average_score: 40 } } }
+    } else if (url.startsWith('/api/vocab/learn-queue')) {
+      reply = { status: 200, body: { words: [QUEUED] } }
+    } else if (url.startsWith('/api/vocab/review-candidates')) {
+      reply = { status: 200, body: { words: [{ ...QUEUED, due: true, next_review: '2026-09-25T10:00:00Z' }] } }
     } else if (url === '/api/vocab/sessions') {
       reply = stub.start ?? { status: 201, body: { session_id: 's1', kind: 'review', word_count: 2, directions: [] } }
     } else if (url === '/api/vocab/sessions/s1/next') {
@@ -177,6 +196,8 @@ function button(name: string | RegExp): HTMLButtonElement {
 async function startedSession(kind: 'learn' | 'review' = 'review'): Promise<void> {
   render(<SessionPage kind={kind} />)
   await screen.findByText(kind === 'learn' ? '2 new words' : '1 word due')
+  // The learn queue or the review picker is in: a review then starts over the words it chose.
+  await screen.findByRole('list', { name: kind === 'learn' ? 'Learn queue' : 'Words to review' })
   fireEvent.click(button('Start'))
 }
 
@@ -208,7 +229,7 @@ test('the start form counts the words the session could take, from the word list
   expect(screen.getByRole('heading', { name: 'Learn new words' })).toBeDefined()
 })
 
-test('starting with the defaults sends the kind and all four directions, no tag and no size', async () => {
+test('starting with the defaults sends the kind, all four directions and the words picked, no tag and no size', async () => {
   const fetchMock = stubFetch({ next: [ok(CHOICE_QUESTION)] })
 
   await startedSession('review')
@@ -223,6 +244,7 @@ test('starting with the defaults sends the kind and all four directions, no tag 
         'voice_to_hangul',
         'voice_to_translation',
       ],
+      word_ids: [7],
     },
   ])
 })
@@ -489,11 +511,86 @@ test('the end shows the summary, a link to the word list and a way to start agai
   stubFetch({ next: [ok(END)] })
   await startedSession()
 
-  expect(await screen.findByText('1 of 2 right at the first try')).toBeDefined()
+  expect(
+    await screen.findByText(
+      '1 of 2 words right in every direction, 1 of 2 questions right at the first try',
+    ),
+  ).toBeDefined()
   expect(screen.getByText('missed')).toBeDefined()
   expect(screen.getByText('right')).toBeDefined()
   expect(screen.getByRole('link', { name: 'See your words' }).getAttribute('href')).toBe('#/words')
   fireEvent.click(button('Start another session'))
 
   expect(await screen.findByRole('button', { name: 'Start' })).toBeDefined()
+})
+
+// ---------------------------------------------------------------------------------
+// Per direction (vocab-directions T05)
+// ---------------------------------------------------------------------------------
+
+test('progress reads in words and in questions', async () => {
+  const progress = { done: 1, total: 3, questions_done: 5, question_total: 10 }
+  stubFetch({ next: [ok({ ...CHOICE_QUESTION, progress })] })
+  await startedSession()
+
+  expect(await screen.findByText('1 of 3 words done, 5 of 10 questions')).toBeDefined()
+})
+
+test('the score change names the direction it belongs to', async () => {
+  const question = {
+    ...CHOICE_QUESTION,
+    direction: 'voice_to_hangul',
+    prompt: null,
+    audio_url: '/api/vocab/items/q1/audio',
+    options: ['배', '사과', '감', '포도'],
+  }
+  const verdict = {
+    ...WRONG_SCORED,
+    correct: true,
+    correct_option: '사과',
+    statistics_before: { ...LAPSED, score: 14 },
+    statistics_after: { ...KNOWN, score: 30 },
+  }
+  stubFetch({ next: [ok(question)], answer: [ok(verdict)] })
+  await startedSession()
+
+  fireEvent.click(await screen.findByRole('button', { name: '사과' }))
+
+  expect(await screen.findByText('14% → 30%')).toBeDefined()
+  expect(screen.getByText('Voice to Hangul')).toBeDefined()
+})
+
+test('the summary lists a word once, with each direction and its verdict in words', async () => {
+  const end = {
+    type: 'end',
+    summary: {
+      words: [
+        {
+          korean: '사과',
+          translations: ['apple'],
+          correct: false,
+          directions: [
+            { direction: 'hangul_to_translation', correct: true },
+            { direction: 'voice_to_hangul', correct: false },
+          ],
+        },
+      ],
+      word_count: 1,
+      correct_count: 0,
+      question_count: 2,
+      correct_question_count: 1,
+    },
+  }
+  stubFetch({ next: [ok(end)] })
+  await startedSession()
+
+  expect(
+    await screen.findByText('0 of 1 word right in every direction, 1 of 2 questions right at the first try'),
+  ).toBeDefined()
+  expect(screen.getAllByText('사과')).toHaveLength(1)
+  const rows = screen.getAllByRole('listitem').filter((item) => item.querySelector('ul') === null)
+  expect(rows.map((row) => row.textContent)).toEqual([
+    'Hangul to translation:right',
+    'Voice to Hangul:missed',
+  ])
 })
