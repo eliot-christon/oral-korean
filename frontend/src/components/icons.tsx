@@ -119,3 +119,13 @@ export function ChevronDownIcon({ className = 'size-5' }: { className?: string }
     </Svg>
   )
 }
+
+/** An arrow pointing down: the word list's sort direction, turned for the other one. */
+export function ArrowDownIcon({ className = 'size-5' }: { className?: string }) {
+  return (
+    <Svg className={className}>
+      <path d="M12 5v14" />
+      <path d="m6 13 6 6 6-6" />
+    </Svg>
+  )
+}

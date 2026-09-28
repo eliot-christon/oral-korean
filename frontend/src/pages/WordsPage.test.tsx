@@ -70,7 +70,7 @@ const TAGS = { tags: [{ tag: 'drinks', count: 1 }, { tag: 'food', count: 2 }] }
 interface StubConfig {
   /** The tags route's body. */
   tags?: unknown
-  /** The unfiltered list; a `tag` query answers `byTag[tag]`. */
+  /** The list with no tag included; a query including one tag answers `byTag[tag]`. */
   list?: unknown
   byTag?: Record<string, unknown>
   /** A refusal for every list request: its status and body. */
@@ -105,7 +105,7 @@ function listQueries(fetchMock: ReturnType<typeof vi.fn>): string[] {
 }
 
 async function cards(): Promise<HTMLElement[]> {
-  const list = await screen.findByRole('list')
+  const list = await screen.findByRole('list', { name: 'Words' })
   return within(list).getAllByRole('listitem')
 }
 
@@ -181,29 +181,76 @@ test('a null average score shows a dash, not 0%', async () => {
   expect(summaryValue('Average score')).toBe('-')
 })
 
-test('choosing a tag reloads the list for it, and clearing the filter shows every word again', async () => {
+function button(name: string): Promise<HTMLElement> {
+  return screen.findByRole('button', { name })
+}
+
+async function search(text: string): Promise<void> {
+  fireEvent.change(await screen.findByRole('textbox', { name: 'Search tags' }), { target: { value: text } })
+}
+
+function toggleButton(group: string, name: string): Promise<HTMLElement> {
+  return screen.findByRole('group', { name: group }).then((found) => within(found).getByRole('button', { name }))
+}
+
+test('tapping a tag includes it, and tapping the chosen tag drops it again', async () => {
   const fetchMock = stubFetch({ byTag: { food: FOOD_LIST } })
 
   render(<WordsPage />)
   expect(await cards()).toHaveLength(3)
-  const filter = (await screen.findByRole('combobox', { name: 'Tag' })) as HTMLSelectElement
-  expect(within(filter).getAllByRole('option').map((option) => option.textContent)).toEqual([
-    'All tags',
+  const suggestions = await screen.findByRole('list', { name: 'Tags' })
+  expect(within(suggestions).getAllByRole('button').map((item) => item.textContent)).toEqual([
     'drinks (1)',
     'food (2)',
   ])
 
-  fireEvent.change(filter, { target: { value: 'food' } })
+  fireEvent.click(await button('food (2)'))
 
   await waitFor(() => expect(listQueries(fetchMock)).toEqual(['', '?tag=food']))
   await waitFor(async () => expect(await cards()).toHaveLength(1))
   expect((await cards())[0].textContent).toContain('사과')
   expect(summaryValue('Words')).toBe('1')
+  expect(screen.getByText('Only words with')).toBeDefined()
+  expect(screen.queryByRole('button', { name: 'food (2)' })).toBeNull()
 
-  fireEvent.change(filter, { target: { value: '' } })
+  fireEvent.click(await button('Remove food'))
 
   await waitFor(() => expect(listQueries(fetchMock)).toEqual(['', '?tag=food', '']))
   await waitFor(async () => expect(await cards()).toHaveLength(3))
+})
+
+test('the search narrows the tags, and Enter takes the first match', async () => {
+  const fetchMock = stubFetch({ byTag: { drinks: FOOD_LIST } })
+
+  render(<WordsPage />)
+  await search('DRI')
+  const suggestions = await screen.findByRole('list', { name: 'Tags' })
+  expect(within(suggestions).getAllByRole('button').map((item) => item.textContent)).toEqual(['drinks (1)'])
+
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search tags' }), { key: 'Enter' })
+
+  await waitFor(() => expect(listQueries(fetchMock)).toEqual(['', '?tag=drinks']))
+  expect((screen.getByRole('textbox', { name: 'Search tags' }) as HTMLInputElement).value).toBe('')
+})
+
+test('Enter while an input method is composing takes no tag', async () => {
+  const fetchMock = stubFetch()
+
+  render(<WordsPage />)
+  await search('foo')
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Search tags' }), { key: 'Enter', keyCode: 229 })
+
+  expect(listQueries(fetchMock)).toEqual([''])
+  expect(screen.queryByText('Only words with')).toBeNull()
+})
+
+test('a search matching no tag says so', async () => {
+  stubFetch()
+
+  render(<WordsPage />)
+  await search('verb')
+
+  expect(await screen.findByText('No other tag contains verb.')).toBeDefined()
 })
 
 test('a tag with characters that need escaping is sent encoded', async () => {
@@ -211,9 +258,102 @@ test('a tag with characters that need escaping is sent encoded', async () => {
   const fetchMock = stubFetch({ tags: { tags: [{ tag, count: 1 }] }, byTag: { [tag]: FOOD_LIST } })
 
   render(<WordsPage />)
-  fireEvent.change(await screen.findByRole('combobox', { name: 'Tag' }), { target: { value: tag } })
+  fireEvent.click(await button(`${tag} (1)`))
 
   await waitFor(() => expect(listQueries(fetchMock)).toEqual(['', '?tag=topik+1+%26+2']))
+})
+
+test('the any or all switch shows once two tags are included, and all is sent', async () => {
+  const fetchMock = stubFetch({ byTag: { drinks: FOOD_LIST } })
+
+  render(<WordsPage />)
+  fireEvent.click(await button('drinks (1)'))
+  await waitFor(() => expect(listQueries(fetchMock)).toHaveLength(2))
+  expect(screen.queryByRole('group', { name: 'Match' })).toBeNull()
+
+  fireEvent.click(await button('food (2)'))
+  expect((await toggleButton('Match', 'any of them')).getAttribute('aria-pressed')).toBe('true')
+  fireEvent.click(await toggleButton('Match', 'all of them'))
+
+  await waitFor(() =>
+    expect(listQueries(fetchMock)).toEqual([
+      '',
+      '?tag=drinks',
+      '?tag=drinks&tag=food',
+      '?tag=drinks&tag=food&match=all',
+    ]),
+  )
+  expect((await toggleButton('Match', 'all of them')).getAttribute('aria-pressed')).toBe('true')
+})
+
+test('with the toggle on Exclude, a tapped tag is excluded', async () => {
+  const fetchMock = stubFetch()
+
+  render(<WordsPage />)
+  expect((await toggleButton('A tapped tag is', 'Include')).getAttribute('aria-pressed')).toBe('true')
+  fireEvent.click(await toggleButton('A tapped tag is', 'Exclude'))
+  fireEvent.click(await button('food (2)'))
+
+  await waitFor(() => expect(listQueries(fetchMock)).toEqual(['', '?exclude=food']))
+  expect(screen.getByText('Without')).toBeDefined()
+  expect((await toggleButton('A tapped tag is', 'Exclude')).getAttribute('aria-pressed')).toBe('true')
+})
+
+test('Clear tags drops every chosen tag at once', async () => {
+  const fetchMock = stubFetch({ byTag: { drinks: FOOD_LIST } })
+
+  render(<WordsPage />)
+  fireEvent.click(await button('drinks (1)'))
+  expect(screen.getByRole('button', { name: 'Clear tags' })).toBeDefined()
+  fireEvent.click(await toggleButton('A tapped tag is', 'Exclude'))
+  fireEvent.click(await button('food (2)'))
+  await waitFor(() => expect(listQueries(fetchMock)).toEqual(['', '?tag=drinks', '?tag=drinks&exclude=food']))
+
+  fireEvent.click(await button('Clear tags'))
+
+  await waitFor(() =>
+    expect(listQueries(fetchMock)).toEqual(['', '?tag=drinks', '?tag=drinks&exclude=food', '']),
+  )
+  expect(screen.queryByRole('button', { name: 'Clear tags' })).toBeNull()
+})
+
+test('a sort field starts in its usual direction and the arrow button turns it round', async () => {
+  const fetchMock = stubFetch()
+
+  render(<WordsPage />)
+  const sort = (await screen.findByRole('combobox', { name: 'Sort by' })) as HTMLSelectElement
+  expect(within(sort).getAllByRole('option').map((option) => option.textContent)).toEqual([
+    'Date added',
+    'Score',
+    'Next review',
+    'Korean',
+  ])
+  expect(await button('Oldest first')).toBeDefined()
+
+  fireEvent.change(sort, { target: { value: 'score' } })
+  await waitFor(() => expect(listQueries(fetchMock)).toEqual(['', '?sort=score&order=desc']))
+
+  fireEvent.click(await button('Highest first'))
+  await waitFor(() =>
+    expect(listQueries(fetchMock)).toEqual(['', '?sort=score&order=desc', '?sort=score&order=asc']),
+  )
+  expect(await button('Lowest first')).toBeDefined()
+
+  // Back to the default order: nothing is sent, as on the first load.
+  fireEvent.change(sort, { target: { value: 'added' } })
+  await waitFor(() =>
+    expect(listQueries(fetchMock)).toEqual(['', '?sort=score&order=desc', '?sort=score&order=asc', '']),
+  )
+})
+
+test('no word matching the tags says so, without the add link of an empty vocabulary', async () => {
+  stubFetch({ byTag: { food: { words: [], summary: { total: 0, new: 0, due: 0, average_score: null } } } })
+
+  render(<WordsPage />)
+  fireEvent.click(await button('food (2)'))
+
+  expect(await screen.findByText('No word matches these tags.')).toBeDefined()
+  expect(screen.queryByText(/no words yet/i)).toBeNull()
 })
 
 test('each card links to its word', async () => {
@@ -232,7 +372,7 @@ test('an empty vocabulary shows the empty state, not an empty list', async () =>
   render(<WordsPage />)
 
   expect(await screen.findByText(/no words yet/i)).toBeDefined()
-  expect(screen.queryByRole('list')).toBeNull()
+  expect(screen.queryByRole('list', { name: 'Words' })).toBeNull()
 })
 
 test('a failed list request shows the backends own message in an alert', async () => {
