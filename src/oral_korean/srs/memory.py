@@ -30,6 +30,7 @@ with a message that says so rather than guessed at.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -278,6 +279,35 @@ def statistics(state: MemoryState | None, at: datetime) -> WordStatistics:
         next_review=state.next_review, last_review=state.last_review,
         due=at >= state.next_review,
         review_count=state.review_count, lapse_count=state.lapse_count,
+    )
+
+
+def aggregate_statistics(states: Sequence[MemoryState | None], at: datetime) -> WordStatistics:
+    """One set of statistics over several independent memories of the same word, at `at`.
+
+    The score is the mean of their scores, a missing memory counting 0, and `None` only when
+    every one is missing; so is the phase. The word is due when any memory is, its next
+    review is the earliest, its last review the latest, and the counts are summed. Recall,
+    stability and difficulty belong to one memory and have no combined meaning: `None`.
+
+    Raises:
+        ValueError: `states` is empty, or `at`, or a datetime in a state, is naive.
+    """
+    at = _as_utc(at)
+    if not states:
+        raise ValueError("No memory state to aggregate.")
+    learned = [state for state in states if state is not None]
+    if not learned:
+        return _NEW_WORD_STATISTICS
+    strengths = sum(strength(state.stability) for state in learned)
+    return WordStatistics(
+        score=round(strengths / len(states)), recall=None, stability=None, difficulty=None,
+        phase=Phase.REVIEW,
+        next_review=min(_as_utc(state.next_review) for state in learned),
+        last_review=max(_as_utc(state.last_review) for state in learned),
+        due=any(at >= state.next_review for state in learned),
+        review_count=sum(state.review_count for state in learned),
+        lapse_count=sum(state.lapse_count for state in learned),
     )
 
 
