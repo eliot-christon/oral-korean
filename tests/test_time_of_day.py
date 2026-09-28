@@ -109,18 +109,8 @@ READING_CASES: list[tuple[time, OnTheHour, HalfPast, str]] = [
 
 # The twelve hour words, written literally, indexed by hour % 12: 0 and 12 are both 열두.
 HOUR_WORDS: list[str] = [
-    "열두",
-    "한",
-    "두",
-    "세",
-    "네",
-    "다섯",
-    "여섯",
-    "일곱",
-    "여덟",
-    "아홉",
-    "열",
-    "열한",
+    "열두", "한", "두", "세", "네", "다섯",
+    "여섯", "일곱", "여덟", "아홉", "열", "열한",
 ]
 
 READINGS: list[tuple[OnTheHour, HalfPast]] = [
