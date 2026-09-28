@@ -15,8 +15,11 @@ implementation, and they define the contract it satisfies. The session plan has 
 - `VocabJudgement` (frozen): `correct`, `korean`, `translations`, `correct_option`.
 - `TypedAnswer(text)`, `ChoiceAnswer(index)`, `DontKnowAnswer()` and the union `SubmittedAnswer`;
   `MalformedAnswerError(ValueError)` refuses an unusable submission.
-- `answer_mode(memory)`, `grade_for(*, correct, mode)`, `draw_direction(directions, *, rng=None)`,
+- `answer_mode(memory)`, `grade_for(*, correct, mode)`,
   `build_question(word, direction, *, candidates=(), rng=None)`, `judge_answer(question, answer)`.
+
+`draw_direction` went with vocab-directions T02: a session now asks each word in the directions
+`directions_to_ask` chooses, pinned in `tests/test_exercises_vocab_session.py`.
 
 Decisions taken here that the ticket leaves open, flagged in the hand-back report:
 
@@ -24,7 +27,8 @@ Decisions taken here that the ticket leaves open, flagged in the hand-back repor
    is an `int`, so a union of primitives could not tell a choice index from a mistake.
 2. **`grade_for` takes no direction**: it cannot change the grade if it never reaches the
    mapping, and the whole chain is proven direction-blind end to end instead.
-3. **`build_question` decides the mode itself**, from the word's own memory, because falling
+3. **`build_question` decides the mode itself**, from the memory of the direction asked
+   (`word.memories[direction]`, vocab-directions T01), because falling
    back to typing when no distractor is eligible is a decision only the builder can make.
 4. **Distractor eligibility is direction-blind**: the target, a shared Hangul match key and a
    shared translation each disqualify a candidate in all four directions (the ticket's
@@ -66,11 +70,10 @@ from oral_korean.exercises.vocab import (
     VocabQuestion,
     answer_mode,
     build_question,
-    draw_direction,
     grade_for,
     judge_answer,
 )
-from oral_korean.exercises.vocab_words import VocabularyWord
+from oral_korean.exercises.vocab_words import VocabularyWord, same_memory
 from oral_korean.srs.memory import Familiarity, Grade, MemoryState, apply_grade, seed
 
 T0 = datetime(2026, 9, 21, 9, 0, tzinfo=UTC)
@@ -92,7 +95,8 @@ TO_HANGUL_IDS = [direction.value for direction in TO_HANGUL]
 def make_word(
     word_id: int, korean: str, *translations: str, familiarity: Familiarity = Familiarity.NEW
 ) -> VocabularyWord:
-    """One stored word, as storage hands it over; its memory is `srs/`'s own seed."""
+    """One stored word, as storage hands it over; every direction's memory is `srs/`'s own
+    seed, as adding a word does (vocab-directions T01)."""
     seeded = seed(familiarity, T0, fuzzing=False)
     return VocabularyWord(
         id=word_id,
@@ -101,7 +105,7 @@ def make_word(
         tags=(),
         familiarity=familiarity,
         added_at=T0,
-        memory=None if seeded is None else seeded[0],
+        memories=same_memory(None if seeded is None else seeded[0]),
     )
 
 
@@ -254,7 +258,6 @@ def test_a_malformed_answer_is_a_value_error() -> None:
     [
         pytest.param(answer_mode, ["memory"], [], id="answer_mode"),
         pytest.param(grade_for, [], ["correct", "mode"], id="grade_for"),
-        pytest.param(draw_direction, ["directions"], ["rng"], id="draw_direction"),
         pytest.param(
             build_question, ["word", "direction"], ["candidates", "rng"], id="build_question"
         ),
@@ -344,8 +347,54 @@ def test_the_mode_turns_over_at_the_threshold(stability: float, mode: AnswerMode
 def test_the_familiarity_a_word_was_added_with_decides_its_first_mode(
     familiarity: Familiarity, mode: AnswerMode
 ) -> None:
-    """The threshold sits between the `a_little` and `well` seeds, which is why it is 2.0."""
-    assert answer_mode(make_word(1, "집", "house", familiarity=familiarity).memory) is mode
+    """The threshold sits between the `a_little` and `well` seeds, which is why it is 2.0. A seed
+    lands in all four directions, so each of them starts in the same mode."""
+    memories = make_word(1, "집", "house", familiarity=familiarity).memories
+
+    assert [answer_mode(memories[direction]) for direction in Direction] == [mode] * 4
+
+
+def with_direction_stability(direction: Direction, stability: float) -> VocabularyWord:
+    """집 whose `direction` memory sits at `stability` days, every other direction at the
+    `a_little` seed's 1.3: the ticket's own example of two directions in two modes."""
+    memories = same_memory(memory_of(Familiarity.A_LITTLE))
+    memories[direction] = with_stability(stability)
+    return dataclasses.replace(JIP, familiarity=Familiarity.A_LITTLE, memories=memories)
+
+
+def modes_by_direction(word: VocabularyWord) -> dict[Direction, AnswerMode]:
+    """The mode `build_question` picks for `word` in each direction, distractors available."""
+    return {
+        direction: drawn(word, direction, candidates=CANDIDATES).mode for direction in Direction
+    }
+
+
+@pytest.mark.parametrize("strong", DIRECTIONS, ids=DIRECTION_IDS)
+def test_the_mode_follows_the_memory_of_the_direction_asked(strong: Direction) -> None:
+    """One direction at 3 days of stability, the other three at 1.3 (vocab-directions T01): a
+    question in the strong direction is typed, a question in any other is tapped. The mode is
+    decided per direction, from that direction's memory alone."""
+    word = with_direction_stability(strong, 3.0)
+    assert memory_of(Familiarity.A_LITTLE).stability < TYPING_STABILITY_DAYS  # sanity
+
+    modes = modes_by_direction(word)
+
+    assert modes[strong] is AnswerMode.TYPING
+    assert [modes[other] for other in Direction if other is not strong] == [AnswerMode.CHOICE] * 3
+
+
+@pytest.mark.parametrize("weak", DIRECTIONS, ids=DIRECTION_IDS)
+def test_a_direction_with_no_memory_is_tapped_while_the_others_are_typed(weak: Direction) -> None:
+    """A word learned in three directions and never asked in the fourth: that fourth is a first
+    sight, so it is multiple choice, whatever the other three know."""
+    memories = same_memory(memory_of(Familiarity.WELL))
+    memories[weak] = None
+    word = dataclasses.replace(JIP, memories=memories)
+
+    modes = modes_by_direction(word)
+
+    assert modes[weak] is AnswerMode.CHOICE
+    assert [modes[other] for other in Direction if other is not weak] == [AnswerMode.TYPING] * 3
 
 
 def test_a_lapse_drops_a_strong_word_back_to_multiple_choice() -> None:
@@ -397,8 +446,8 @@ def test_no_answer_ever_earns_easy(correct: bool, mode: AnswerMode) -> None:
 
 @pytest.mark.parametrize("direction", DIRECTIONS, ids=DIRECTION_IDS)
 def test_the_direction_never_changes_the_grade_of_a_typed_answer(direction: Direction) -> None:
-    """Hearing a word is harder than reading it, but FSRS keeps one memory per word, so a
-    harder question must not be mixed into a stronger memory."""
+    """Hearing a word is harder than reading it, but each direction has its own memory
+    (vocab-directions T01), so the difficulty is already the memory's, never the grade's."""
     question = drawn(KNOWN_JIP, direction)
 
     right = judge_answer(question, TypedAnswer(question.accepted_answers[0]))
@@ -463,33 +512,6 @@ def test_a_word_added_as_well_known_starts_typing_and_falls_back_after_one_miss(
     modes, _ = answered_in_turn(memory_of(Familiarity.WELL), correct=False, answers=2)
 
     assert modes == [AnswerMode.TYPING, AnswerMode.CHOICE]
-
-
-# ---------------------------------------------------------------------------------
-# Drawing a direction
-# ---------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("direction", DIRECTIONS, ids=DIRECTION_IDS)
-def test_drawing_from_a_single_direction_always_returns_it(direction: Direction) -> None:
-    """A session run without the voice directions (no Korean TTS on the host) must never be
-    handed one of them."""
-    drawings = {draw_direction({direction}, rng=random.Random(value)) for value in SEEDS}
-
-    assert drawings == {direction}
-
-
-def test_drawing_from_all_four_directions_reaches_every_one() -> None:
-    """A draw that quietly returned one direction every time would pass every other test."""
-    drawings = {draw_direction(DIRECTIONS, rng=random.Random(value)) for value in SEEDS}
-
-    assert drawings == set(Direction)
-
-
-def test_drawing_from_no_direction_at_all_is_refused() -> None:
-    """A session that allows nothing is a caller's bug, not a direction to invent."""
-    with pytest.raises(ValueError):
-        draw_direction(set())
 
 
 # ---------------------------------------------------------------------------------

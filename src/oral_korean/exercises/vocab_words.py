@@ -26,9 +26,10 @@ Rules worth knowing before changing them:
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Final
 
 from oral_korean.korean import hangul
@@ -53,6 +54,20 @@ _BYTE_ORDER_MARK: Final = chr(0xFEFF)
 _LINE_BREAK: Final = re.compile(r"\r\n|\r|\n")
 _SIDE_SEPARATOR: Final = re.compile(r"[;\t]")
 _TRANSLATION_SEPARATOR: Final = ";"
+
+
+class Direction(StrEnum):
+    """Which side is shown or spoken, and which side answers it.
+
+    Wire values: what a session request names a direction as. It lives here rather than in
+    `vocab.py` because a stored word keeps one memory per direction, and `vocab.py` imports
+    this module; `vocab.py` re-exports it.
+    """
+
+    HANGUL_TO_TRANSLATION = "hangul_to_translation"
+    TRANSLATION_TO_HANGUL = "translation_to_hangul"
+    VOICE_TO_HANGUL = "voice_to_hangul"
+    VOICE_TO_TRANSLATION = "voice_to_translation"
 
 
 @dataclass(frozen=True)
@@ -117,7 +132,8 @@ class VocabularyWord:
         tags: normalised and sorted.
         familiarity: the level it was added with; it never changes afterwards.
         added_at: when it was added.
-        memory: what FSRS knows about it, or `None` for a word never seeded nor answered.
+        memories: what FSRS knows about it in each direction, every direction a key: `None`
+            for a direction never seeded nor answered. The four are independent.
     """
 
     id: int
@@ -126,7 +142,12 @@ class VocabularyWord:
     tags: tuple[str, ...]
     familiarity: Familiarity
     added_at: datetime
-    memory: MemoryState | None
+    memories: Mapping[Direction, MemoryState | None]
+
+
+def same_memory(state: MemoryState | None) -> dict[Direction, MemoryState | None]:
+    """Every direction mapped to `state`: how a familiarity seed, or no memory, starts out."""
+    return dict.fromkeys(Direction, state)
 
 
 def parse_translations(text: str) -> tuple[str, ...]:

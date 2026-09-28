@@ -12,7 +12,12 @@ the implementation must satisfy. Everything is imported from `oral_korean.exerci
   (from `srs/`), plus a read-only `match_key` **property** (`hangul.match_key(korean)`, never
   a field, so a draft can never carry a key that disagrees with its Korean).
 - `VocabularyWord` (frozen): `id`, `korean`, `translations`, `tags`, `familiarity`,
-  `added_at`, `memory` (a `MemoryState | None` from `srs/`) - the value storage returns.
+  `added_at`, `memories` (vocab-directions T01: a mapping from every `Direction` to that
+  direction's `MemoryState | None` from `srs/`) - the value storage returns.
+- `Direction` (vocab-directions T01) lives here, since `vocab.py` imports this module and the
+  reverse import would cycle; `vocab.Direction` is the very same object.
+  `same_memory(state) -> dict[Direction, MemoryState | None]` maps all four directions to one
+  state, which is what a familiarity seed does.
 - `parse_translations(text) -> tuple[str, ...]`, `normalise_tags(tags) -> tuple[str, ...]`,
   `make_draft(korean, translations, tags, familiarity) -> WordDraft`,
   `parse_pasted_list(text, tags, familiarity) -> tuple[WordDraft, ...]`. All four positional
@@ -56,12 +61,14 @@ from datetime import UTC, datetime
 import pytest
 from conftest import signature_shape
 
+from oral_korean.exercises import vocab
 from oral_korean.exercises.vocab_words import (
     MAX_KOREAN_LENGTH,
     MAX_PASTED_LINES,
     MAX_TAG_LENGTH,
     MAX_TRANSLATION_LENGTH,
     MAX_TRANSLATIONS,
+    Direction,
     EntryProblem,
     VocabularyWord,
     WordDraft,
@@ -70,9 +77,10 @@ from oral_korean.exercises.vocab_words import (
     normalise_tags,
     parse_pasted_list,
     parse_translations,
+    same_memory,
 )
 from oral_korean.korean import hangul
-from oral_korean.srs.memory import Familiarity
+from oral_korean.srs.memory import Familiarity, seed
 
 BOM = chr(0xFEFF)
 """A leading byte-order mark, never typed into this file as a literal invisible character."""
@@ -220,7 +228,7 @@ def test_a_vocabulary_word_is_a_frozen_value_with_the_agreed_fields() -> None:
         tags=(),
         familiarity=Familiarity.NEW,
         added_at=datetime(2026, 9, 21, tzinfo=UTC),
-        memory=None,
+        memories=same_memory(None),
     )
     names = [field.name for field in dataclasses.fields(word)]
 
@@ -231,11 +239,56 @@ def test_a_vocabulary_word_is_a_frozen_value_with_the_agreed_fields() -> None:
         "tags",
         "familiarity",
         "added_at",
-        "memory",
+        "memories",
     ]
     for name in names:
         with pytest.raises(dataclasses.FrozenInstanceError):
             setattr(word, name, None)
+
+
+def test_direction_lives_here_and_the_quiz_module_re_exports_the_same_object() -> None:
+    """Moved below `vocab.py` (vocab-directions T01) so a word can key its memories by it
+    without an import cycle; every existing `from ...vocab import Direction` keeps working."""
+    assert vocab.Direction is Direction
+    assert [direction.value for direction in Direction] == [
+        "hangul_to_translation",
+        "translation_to_hangul",
+        "voice_to_hangul",
+        "voice_to_translation",
+    ]
+
+
+@pytest.mark.parametrize(
+    "familiarity",
+    [Familiarity.A_LITTLE, Familiarity.WELL, Familiarity.VERY_WELL],
+    ids=["a_little", "well", "very_well"],
+)
+def test_same_memory_gives_every_direction_one_seeded_state(familiarity: Familiarity) -> None:
+    """A familiarity seed applies to all four directions (vocab-directions, decided)."""
+    seeded = seed(familiarity, datetime(2026, 9, 21, tzinfo=UTC), fuzzing=False)
+    assert seeded is not None
+
+    memories = same_memory(seeded[0])
+
+    assert list(memories) == list(Direction)
+    assert all(state == seeded[0] for state in memories.values())
+
+
+def test_same_memory_of_none_gives_every_direction_no_memory() -> None:
+    """A word added as new has no memory in any direction, and still names all four keys."""
+    memories = same_memory(None)
+
+    assert list(memories) == list(Direction)
+    assert all(state is None for state in memories.values())
+
+
+def test_same_memory_returns_a_fresh_mapping_each_call() -> None:
+    """A shared dict would let one word's answer leak into another word's memories."""
+    first = same_memory(None)
+    second = same_memory(None)
+
+    assert first == second
+    assert first is not second
 
 
 # ---------------------------------------------------------------------------------

@@ -1,10 +1,11 @@
-"""The vocabulary exercise: which direction, which mode, what counts as right, what grade.
+"""The vocabulary exercise: which directions, which mode, what counts as right, what grade.
 
-Pure, like `exercises/numbers.py`: no HTTP, no storage, no audio. Given a word, its
-candidates and a random source, this module builds a question in one of four directions,
-in the mode the word's own FSRS state calls for, judges a submitted answer, and maps the
-outcome onto an FSRS grade. `vocab_session.py` sequences a learn or review session over a
-list of words; its names are re-exported here so one import covers both.
+Pure, like `exercises/numbers.py`: no HTTP, no storage, no audio. This module chooses the
+directions a word is asked in during a session, from each direction's own memory; given a
+word, its candidates and a random source, it builds a question in one direction, in the mode
+that direction's FSRS state calls for, judges a submitted answer, and maps the outcome onto
+an FSRS grade. `vocab_session.py` sequences a learn or review session over the words and
+their directions; its names are re-exported here so one import covers both.
 
 **The grade mapping is the one place a mistake here is silent**: a right answer scored as
 a lapse raises nothing, the word just comes back at the wrong interval. Multiple choice
@@ -19,19 +20,22 @@ import random
 import unicodedata
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Final, Literal
 
 from oral_korean.exercises.vocab_session import (
+    DirectionResult,
     ItemKind,
     SessionItem,
     SessionKind,
     SessionPlan,
+    SessionProgress,
     SessionStateError,
     SessionSummary,
     WordResult,
 )
-from oral_korean.exercises.vocab_words import VocabularyWord
+from oral_korean.exercises.vocab_words import Direction, VocabularyWord
 from oral_korean.korean import hangul
 from oral_korean.srs.memory import Grade, MemoryState
 
@@ -41,12 +45,14 @@ __all__ = [
     "ChoiceAnswer",
     "Choices",
     "Direction",
+    "DirectionResult",
     "DontKnowAnswer",
     "ItemKind",
     "MalformedAnswerError",
     "SessionItem",
     "SessionKind",
     "SessionPlan",
+    "SessionProgress",
     "SessionStateError",
     "SessionSummary",
     "SubmittedAnswer",
@@ -56,22 +62,10 @@ __all__ = [
     "WordResult",
     "answer_mode",
     "build_question",
-    "draw_direction",
+    "directions_to_ask",
     "grade_for",
     "judge_answer",
 ]
-
-
-class Direction(StrEnum):
-    """Which side is shown or spoken, and which side answers it.
-
-    Wire values: what a session request (T03) names a direction as.
-    """
-
-    HANGUL_TO_TRANSLATION = "hangul_to_translation"
-    TRANSLATION_TO_HANGUL = "translation_to_hangul"
-    VOICE_TO_HANGUL = "voice_to_hangul"
-    VOICE_TO_TRANSLATION = "voice_to_translation"
 
 
 class AnswerMode(StrEnum):
@@ -224,18 +218,26 @@ def grade_for(*, correct: bool, mode: AnswerMode) -> Grade:
     return Grade.HARD if mode is AnswerMode.CHOICE else Grade.GOOD
 
 
-def draw_direction(
-    directions: Collection[Direction], *, rng: random.Random | None = None
-) -> Direction:
-    """Draw one direction from `directions` with the injected random source.
+def directions_to_ask(
+    word: VocabularyWord, kind: SessionKind, ticked: Collection[Direction], at: datetime
+) -> tuple[Direction, ...]:
+    """The directions `word` is asked in, among the `ticked` ones, in `Direction` order.
 
-    Raises:
-        ValueError: `directions` is empty.
+    A learn session asks every direction with no memory yet. A review session asks every
+    learned direction that is due at `at`, or, when none is (a word the user chose to review
+    early), every learned one. A direction never learned is never reviewed, nor a learned one
+    learned again. `()` leaves the word out of the session.
     """
-    if not directions:
-        raise ValueError("No direction to draw from.")
-    source = rng if rng is not None else random.Random()
-    return source.choice(sorted(directions))
+    wanted = [direction for direction in Direction if direction in ticked]
+    if kind is SessionKind.LEARN:
+        return tuple(direction for direction in wanted if word.memories[direction] is None)
+    learned = {
+        direction: memory
+        for direction in wanted
+        if (memory := word.memories[direction]) is not None
+    }
+    due = tuple(direction for direction, memory in learned.items() if at >= memory.next_review)
+    return due or tuple(learned)
 
 
 def build_question(
@@ -245,7 +247,8 @@ def build_question(
     candidates: Sequence[VocabularyWord] = (),
     rng: random.Random | None = None,
 ) -> VocabQuestion:
-    """Build a question for `word` in `direction`, in the mode its memory calls for.
+    """Build a question for `word` in `direction`, in the mode that direction's memory calls
+    for.
 
     `candidates` is the pool multiple choice draws distractors from - the whole
     vocabulary, not just the word's own tag. With no eligible distractor the question
@@ -254,7 +257,7 @@ def build_question(
     source = rng if rng is not None else random.Random()
     side = _answer_side(direction)
 
-    if answer_mode(word.memory) is AnswerMode.CHOICE:
+    if answer_mode(word.memories[direction]) is AnswerMode.CHOICE:
         choice_question = _build_choice_question(word, direction, side, candidates, source)
         if choice_question is not None:
             return choice_question
