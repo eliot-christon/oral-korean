@@ -40,6 +40,21 @@ function stubFetch(): void {
           jsonResponse({ question_id: 'q1', audio_url: '/api/exercises/numbers/questions/q1/audio' }),
         )
       }
+      if (url.endsWith('/api/exercises/time/levels')) {
+        return Promise.resolve(
+          jsonResponse({ levels: [{ level: 'five_minutes', minute_step: 5 }], default: 'five_minutes' }),
+        )
+      }
+      if (url.endsWith('/api/exercises/time/questions')) {
+        return Promise.resolve(
+          jsonResponse({
+            question_id: 't1',
+            audio_url: '/api/exercises/time/questions/t1/audio',
+            level: 'five_minutes',
+            minute_step: 5,
+          }),
+        )
+      }
       if (url.endsWith('/api/vocab/tags')) {
         return Promise.resolve(jsonResponse({ tags: [] }))
       }
@@ -168,13 +183,13 @@ function navigateTo(hash: string): void {
   })
 }
 
-test('the navigation lists the numbers exercise, the word list, learn and review, in that order', () => {
+test('the navigation lists the numbers and clock exercises, the word list, learn and review, in that order', () => {
   startAt('')
   render(<App />)
 
   const links = within(screen.getByRole('navigation')).getAllByRole('link')
-  expect(links.map((link) => link.textContent)).toEqual(['Numbers', 'Words', 'Learn', 'Review'])
-  expect(links.map((link) => link.getAttribute('href'))).toEqual(['#/numbers', '#/words', '#/learn', '#/review'])
+  expect(links.map((link) => link.textContent)).toEqual(['Numbers', 'Time', 'Words', 'Learn', 'Review'])
+  expect(links.map((link) => link.getAttribute('href'))).toEqual(['#/numbers', '#/time', '#/words', '#/learn', '#/review'])
 })
 
 test.each(['#/words', '#/words/12'])('marks Words as the current page at %j', async (hash) => {
@@ -209,6 +224,16 @@ test('a new page starts at the top, but the first one is left where the browser 
 
   expect(scrollSpy).toHaveBeenCalledWith(0, 0)
   await screen.findByRole('heading', { name: '사과' })
+})
+
+test('#/time renders the clock exercise, under the Time entry', async () => {
+  startAt('#/time')
+  render(<App />)
+
+  expect(await screen.findByRole('heading', { name: 'Time' })).toBeDefined()
+  expect(screen.getByRole('link', { name: 'Time' }).getAttribute('aria-current')).toBe('page')
+  // Let the page's first question settle inside the test.
+  await waitFor(() => expect(document.querySelector('audio')).not.toBeNull())
 })
 
 test.each([
