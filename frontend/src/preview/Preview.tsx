@@ -5,7 +5,7 @@ import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Feedback } from '../components/Feedback'
 import { Field } from '../components/Field'
-import { BookIcon, KeypadIcon, LearnIcon, ReplayIcon, ReviewIcon } from '../components/icons'
+import { ArrowDownIcon, BookIcon, KeypadIcon, LearnIcon, ReplayIcon, ReviewIcon } from '../components/icons'
 import { NavBar } from '../components/NavBar'
 import { TextLink } from '../components/TextLink'
 
@@ -135,6 +135,23 @@ export function Preview() {
             </Button>
             <Button round aria-label="Replay" disabled>
               <ReplayIcon />
+            </Button>
+          </div>
+          <p className="text-sm text-muted">
+            Word list controls: a pressed toggle and the sort direction.
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button aria-pressed="true">Include</Button>
+            <Button variant="subtle" aria-pressed="false">
+              Exclude
+            </Button>
+            <Button variant="secondary">
+              <ArrowDownIcon />
+              Highest first
+            </Button>
+            <Button variant="secondary">
+              <ArrowDownIcon className="size-5 rotate-180" />
+              Lowest first
             </Button>
           </div>
         </div>

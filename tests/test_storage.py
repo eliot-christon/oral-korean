@@ -21,8 +21,8 @@ the implementation must satisfy. Two modules, `oral_korean.storage.database` and
   - `add_words(entries, at) -> tuple[VocabularyWord, ...]`, `entries` a sequence of
     `(WordDraft, (MemoryState, ReviewRecord) | None)` pairs, atomic.
   - `get_word(word_id) -> VocabularyWord | None`
-  - `list_words(*, tag=None) -> tuple[VocabularyWord, ...]`, in adding order, tag matched
-    exactly.
+  - `list_words(*, tags=(), match_all=False, exclude=()) -> tuple[VocabularyWord, ...]`, in
+    adding order, tags matched exactly (several tags and exclusions: words-list-filters).
   - `update_word(word_id, korean, translations, tags) -> VocabularyWord | None`, `None`
     for an unknown id; familiarity, memory, history and the adding instant are never
     touched.
@@ -211,7 +211,12 @@ def test_the_project_root_is_computed_exactly_once_in_config() -> None:
             WordStore.add_words, ["self", "entries", "at"], [], id="WordStore.add_words"
         ),
         pytest.param(WordStore.get_word, ["self", "word_id"], [], id="WordStore.get_word"),
-        pytest.param(WordStore.list_words, ["self"], ["tag"], id="WordStore.list_words"),
+        pytest.param(
+            WordStore.list_words,
+            ["self"],
+            ["tags", "match_all", "exclude"],
+            id="WordStore.list_words",
+        ),
         pytest.param(
             WordStore.update_word,
             ["self", "word_id", "korean", "translations", "tags"],
@@ -578,9 +583,9 @@ def test_list_words_filters_by_exact_tag(tmp_path: Path) -> None:
     added = store.add_words([(apple, None), (run, None), (pear, None)], T0)
 
     assert store.list_words() == added
-    assert store.list_words(tag="food") == (added[0], added[2])
-    assert store.list_words(tag="verb") == (added[1],)
-    assert not store.list_words(tag="nonexistent")
+    assert store.list_words(tags=["food"]) == (added[0], added[2])
+    assert store.list_words(tags=["verb"]) == (added[1],)
+    assert not store.list_words(tags=["nonexistent"])
 
 
 def test_list_words_tag_filter_is_matched_exactly_not_normalised(tmp_path: Path) -> None:
@@ -590,8 +595,41 @@ def test_list_words_tag_filter_is_matched_exactly_not_normalised(tmp_path: Path)
         [(make_draft(word(43), "a", ["food"], Familiarity.NEW), None)], T0
     )
 
-    assert not store.list_words(tag="Food")
-    assert store.list_words(tag="food") == (added,)
+    assert not store.list_words(tags=["Food"])
+    assert store.list_words(tags=["food"]) == (added,)
+
+
+def _four_tagged_words(store: WordStore) -> tuple[VocabularyWord, ...]:
+    """Words A{x}, B{x, y}, C{y} and D{}, added in that order."""
+    drafts = [
+        make_draft(word(44), "a", ["x"], Familiarity.NEW),
+        make_draft(word(45), "b", ["x", "y"], Familiarity.NEW),
+        make_draft(word(46), "c", ["y"], Familiarity.NEW),
+        make_draft(word(47), "d", [], Familiarity.NEW),
+    ]
+    return store.add_words([(draft, None) for draft in drafts], T0)
+
+
+def test_list_words_with_several_tags_matches_any_or_all_of_them(tmp_path: Path) -> None:
+    """Any of x and y: A, B, C; all of them: B alone. A repeated tag counts once."""
+    store = build_store(tmp_path)
+    a, b, c, _ = _four_tagged_words(store)
+
+    assert store.list_words(tags=["x", "y"]) == (a, b, c)
+    assert store.list_words(tags=["x", "y"], match_all=True) == (b,)
+    assert store.list_words(tags=["x", "x"], match_all=True) == (a, b)
+    assert not store.list_words(tags=["x", "nonexistent"], match_all=True)
+
+
+def test_list_words_excludes_every_word_carrying_an_excluded_tag(tmp_path: Path) -> None:
+    """Excluding x leaves C and D; with y included too, C alone."""
+    store = build_store(tmp_path)
+    a, b, c, d = _four_tagged_words(store)
+
+    assert store.list_words(exclude=["x"]) == (c, d)
+    assert store.list_words(tags=["y"], exclude=["x"]) == (c,)
+    assert not store.list_words(tags=["x", "y"], match_all=True, exclude=["y"])
+    assert store.list_words(exclude=["nonexistent"]) == (a, b, c, d)
 
 
 # ---------------------------------------------------------------------------------

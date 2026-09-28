@@ -229,8 +229,46 @@ export interface TagsResponse {
 
 /** Every word, or only those carrying `tag`, in the order they were added. */
 export async function fetchWords(tag: string | null = null): Promise<WordListResponse> {
-  const query = tag === null ? '' : `?${new URLSearchParams({ tag }).toString()}`
-  const response = await fetch('/api/vocab/words' + query)
+  return fetchWordList({ tags: tag === null ? [] : [tag] })
+}
+
+export type WordSort = 'score' | 'added' | 'next_review' | 'korean'
+export type SortOrder = 'asc' | 'desc'
+
+/**
+ * Which words to list and in what order: those carrying any of `tags` (all of them with
+ * `match: 'all'`) and none of `exclude`, sorted by `sort` in `order`. Everything left out
+ * takes the backend's default: every word, in the order they were added.
+ */
+export interface WordListQuery {
+  tags?: string[]
+  match?: 'any' | 'all'
+  exclude?: string[]
+  sort?: WordSort
+  order?: SortOrder
+}
+
+/** The words a query selects, with a summary of those words alone. */
+export async function fetchWordList(query: WordListQuery): Promise<WordListResponse> {
+  const params = new URLSearchParams()
+  for (const tag of query.tags ?? []) {
+    params.append('tag', tag)
+  }
+  if (query.match === 'all') {
+    params.append('match', 'all')
+  }
+  for (const tag of query.exclude ?? []) {
+    params.append('exclude', tag)
+  }
+  const sort = query.sort ?? 'added'
+  const order = query.order ?? 'asc'
+  // The default order sends nothing, so an unfiltered list is the bare route.
+  if (sort !== 'added' || order !== 'asc') {
+    params.append('sort', sort)
+    params.append('order', order)
+  }
+  const search = params.toString()
+  const response = await fetch('/api/vocab/words' + (search === '' ? '' : `?${search}`))
   return parseJsonOrThrow<WordListResponse>(response, 'Could not load the words.')
 }
 

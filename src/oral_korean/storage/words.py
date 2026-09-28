@@ -128,16 +128,35 @@ class WordStore:
         with self._database.transaction() as connection:
             return tuple(_read_words(connection, word_ids))
 
-    def list_words(self, *, tag: str | None = None) -> tuple[VocabularyWord, ...]:
-        """Every word, or every word carrying `tag` exactly, in the order they were added."""
-        with self._database.transaction() as connection:
-            if tag is None:
-                rows = connection.execute("SELECT id FROM words ORDER BY id")
-            else:
-                rows = connection.execute(
-                    "SELECT word_id FROM word_tags WHERE tag = ? ORDER BY word_id", (tag,)
-                )
-            return tuple(_read_words(connection, [row[0] for row in rows]))
+    def list_words(
+        self,
+        *,
+        tags: Collection[str] = (),
+        match_all: bool = False,
+        exclude: Collection[str] = (),
+    ) -> tuple[VocabularyWord, ...]:
+        """The words carrying any of `tags` (all of them with `match_all`) and none of
+        `exclude`, tags matched exactly, in the order they were added. No `tags` means no
+        condition on them: every word, less the excluded ones."""
+        conditions = ["1"]
+        included, parameters = _in_list("tag", tags)
+        excluded, excluded_parameters = _in_list("exclude", exclude)
+        parameters.update(excluded_parameters)
+        if tags and match_all:
+            parameters["tag_count"] = len(set(tags))
+            conditions.append(
+                "(SELECT COUNT(DISTINCT tag) FROM word_tags "
+                f"WHERE word_id = words.id AND tag IN ({included})) = :tag_count"
+            )
+        elif tags:
+            conditions.append(f"id IN (SELECT word_id FROM word_tags WHERE tag IN ({included}))")
+        if exclude:
+            conditions.append(
+                f"id NOT IN (SELECT word_id FROM word_tags WHERE tag IN ({excluded}))"
+            )
+        return self._select_words(
+            " AND ".join(conditions), parameters, order="id", tag=None, limit=None
+        )
 
     def update_word(
         self, word_id: int, korean: str, translations: tuple[str, ...], tags: tuple[str, ...]
@@ -408,8 +427,14 @@ def _write_memory(
 
 def _direction_parameters(directions: Collection[Direction]) -> tuple[str, dict[str, object]]:
     """`directions` as named SQL placeholders for an `IN (...)` list, and their values."""
-    values = {f"direction_{index}": direction.value for index, direction in enumerate(directions)}
-    return ", ".join(f":{name}" for name in values), dict(values)
+    return _in_list("direction", [direction.value for direction in directions])
+
+
+def _in_list(prefix: str, values: Iterable[str]) -> tuple[str, dict[str, object]]:
+    """`values` as named SQL placeholders for an `IN (...)` list, each name starting with
+    `prefix`, and their values by name."""
+    named: dict[str, object] = {f"{prefix}_{index}": value for index, value in enumerate(values)}
+    return ", ".join(f":{name}" for name in named), named
 
 
 def _insert_tags(connection: sqlite3.Connection, word_id: int, tags: Iterable[str]) -> None:
