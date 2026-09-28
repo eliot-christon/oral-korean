@@ -15,7 +15,9 @@ Rules worth knowing before changing them:
 - The Korean side must contain Hangul. That is what catches a line pasted the other way round
   (`apple ; 사과`), and when the translation side holds the Hangul the message says so.
 - On a pasted line, the first `;` **or tab** separates the Korean from its translations, so two
-  spreadsheet columns paste as they are; any later `;` separates translations.
+  spreadsheet columns paste as they are. Translations are separated by `,`, and a later `;`
+  counts as one too; a comma inside parentheses (`to want (a thing, a person)`) separates
+  nothing.
 - A pasted batch is **all or nothing**: every problem on every line is collected, numbered as
   the user sees the line in the text box (blank lines count), and any problem refuses the
   batch. Two lines for the same word are a problem too, and so is a line for a word already
@@ -53,7 +55,7 @@ MAX_PASTED_LINES: Final = 500
 _BYTE_ORDER_MARK: Final = chr(0xFEFF)
 _LINE_BREAK: Final = re.compile(r"\r\n|\r|\n")
 _SIDE_SEPARATOR: Final = re.compile(r"[;\t]")
-_TRANSLATION_SEPARATOR: Final = ";"
+_TRANSLATION_SEPARATORS: Final = frozenset(",;")
 
 
 class Direction(StrEnum):
@@ -150,8 +152,31 @@ def same_memory(state: MemoryState | None) -> dict[Direction, MemoryState | None
     return dict.fromkeys(Direction, state)
 
 
+def split_translations(text: str) -> list[str]:
+    """`text` cut at every `,` or `;` outside parentheses, each part trimmed, blanks dropped.
+
+    How a list of translations is written, whether the user adds a word or types an answer.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in text:
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(depth - 1, 0)
+        if char in _TRANSLATION_SEPARATORS and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    parts.append("".join(current))
+    return [stripped for part in parts if (stripped := part.strip())]
+
+
 def parse_translations(text: str) -> tuple[str, ...]:
-    """The translations in `text`, separated by `;`: trimmed, blanks and repeats dropped.
+    """The translations in `text`, separated by `,` (or `;`): trimmed, blanks and repeats
+    dropped.
 
     Repeats are compared without case and the first spelling is kept, as is the order.
 
@@ -311,9 +336,8 @@ def _check_translations(text: str) -> tuple[tuple[str, ...], list[str]]:
     """The translations in `text`, and what is wrong with them."""
     kept: list[str] = []
     seen: set[str] = set()
-    for part in text.split(_TRANSLATION_SEPARATOR):
-        translation = part.strip()
-        if translation and translation.casefold() not in seen:
+    for translation in split_translations(text):
+        if translation.casefold() not in seen:
             seen.add(translation.casefold())
             kept.append(translation)
 

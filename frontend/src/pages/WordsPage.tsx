@@ -85,7 +85,7 @@ function WordCard({ word, now }: { word: Word; now: Date }) {
             <p lang="ko" className="font-display text-3xl wrap-break-word text-ink">
               {word.korean}
             </p>
-            <p className="text-muted">{word.translations.join('; ')}</p>
+            <p className="text-muted">{word.translations.join(', ')}</p>
           </div>
           <Badge tone={statistics.score === null ? 'highlight' : 'score'}>
             <span className="sr-only">Score: </span>

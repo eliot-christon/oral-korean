@@ -49,7 +49,7 @@ router = APIRouter(prefix="/vocab")
 
 
 class AddWordRequest(BaseModel):
-    """One word typed in the add form; the translations exactly as typed (`"house; home"`)."""
+    """One word typed in the add form; the translations exactly as typed (`"house, home"`)."""
 
     korean: str
     translations: str

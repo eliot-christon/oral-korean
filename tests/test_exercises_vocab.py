@@ -523,7 +523,7 @@ def test_a_word_added_as_well_known_starts_typing_and_falls_back_after_one_miss(
     ("direction", "prompt", "speech", "accepted"),
     [
         (Direction.HANGUL_TO_TRANSLATION, "집", None, ("house", "home")),
-        (Direction.TRANSLATION_TO_HANGUL, "house; home", None, ("집",)),
+        (Direction.TRANSLATION_TO_HANGUL, "house, home", None, ("집",)),
         (Direction.VOICE_TO_HANGUL, None, "집", ("집",)),
         (Direction.VOICE_TO_TRANSLATION, None, "집", ("house", "home")),
     ],
@@ -552,10 +552,10 @@ def test_a_typed_question_in_each_direction(
 @pytest.mark.parametrize(
     ("direction", "prompt", "speech", "correct"),
     [
-        (Direction.HANGUL_TO_TRANSLATION, "집", None, "house; home"),
-        (Direction.TRANSLATION_TO_HANGUL, "house; home", None, "집"),
+        (Direction.HANGUL_TO_TRANSLATION, "집", None, "house, home"),
+        (Direction.TRANSLATION_TO_HANGUL, "house, home", None, "집"),
         (Direction.VOICE_TO_HANGUL, None, "집", "집"),
-        (Direction.VOICE_TO_TRANSLATION, None, "집", "house; home"),
+        (Direction.VOICE_TO_TRANSLATION, None, "집", "house, home"),
     ],
     ids=DIRECTION_IDS,
 )
@@ -582,7 +582,7 @@ def test_a_word_that_could_also_be_right_is_never_offered_as_an_option(
     direction: Direction,
 ) -> None:
     """가정 means "home" too, so tapping it would be a right answer marked wrong - and in the
-    other direction it answers the prompt "house; home" as well as 집 does. 집! keys the same
+    other direction it answers the prompt "house, home" as well as 집 does. 집! keys the same
     as 집, so it is the same word however differently it is spelled, and its own translation
     collides with nothing, so only the match-key rule can keep it out.
 
@@ -633,8 +633,8 @@ def test_the_target_in_the_candidate_list_is_only_ever_the_correct_option() -> N
             JIP, Direction.HANGUL_TO_TRANSLATION, candidates=(JIP, *CANDIDATES), seed_value=value
         )
 
-        assert question.options.count("house; home") == 1
-        assert correct_option(question) == "house; home"
+        assert question.options.count("house, home") == 1
+        assert correct_option(question) == "house, home"
 
 
 def test_the_correct_option_reaches_every_position() -> None:
@@ -677,7 +677,7 @@ def test_a_thin_vocabulary_gives_a_shorter_list_of_options(
 
     assert question.mode is AnswerMode.CHOICE
     assert len(question.options) == options
-    assert correct_option(question) == "house; home"
+    assert correct_option(question) == "house, home"
 
 
 @pytest.mark.parametrize(
@@ -716,7 +716,27 @@ def test_a_question_with_no_eligible_distractor_is_asked_by_typing(
         pytest.param(("house", "home"), "hous", False, id="a-letter-short"),
         pytest.param(("house", "home"), "houses", False, id="a-letter-too-many"),
         pytest.param(("house", "home"), "house home", False, id="both-translations-at-once"),
-        pytest.param(("house", "home"), "house; home", False, id="both-as-stored"),
+        pytest.param(("house", "home"), "house, home", True, id="both-comma-separated"),
+        pytest.param(("house", "home"), "home; house", True, id="both-semicolon-separated"),
+        pytest.param(("house", "home"), "house, homes", False, id="one-of-two-wrong"),
+        pytest.param(("house", "home"), "house, ...", False, id="one-of-two-punctuation-only"),
+        pytest.param(("house", "home"), ",", False, id="a-lone-comma"),
+        pytest.param(("fun (short form)",), "fun", True, id="parentheses-left-out"),
+        pytest.param(("fun (short form)",), "fun (short form)", True, id="parentheses-kept"),
+        pytest.param(("fun (short form)",), "Fun (Short Form)!", True, id="parentheses-shouted"),
+        pytest.param(("fun (short form)",), "fun short form", True, id="parentheses-unbracketed"),
+        pytest.param(("fun (short form)",), "short form", False, id="only-the-parentheses"),
+        pytest.param(("fun (short form)",), "fun (long form)", False, id="other-parentheses"),
+        pytest.param(
+            ("fun (short form)", "interesting (short form)"),
+            "fun (short form), interesting",
+            True,
+            id="both-one-with-parentheses",
+        ),
+        pytest.param(("(to) eat",), "eat", True, id="leading-parentheses-left-out"),
+        pytest.param(
+            ("to want (a thing, a person)",), "to want", True, id="comma-inside-parentheses"
+        ),
         pytest.param(("house", "home"), "", False, id="nothing-typed"),
         pytest.param(("house", "home"), "   ", False, id="whitespace-only"),
         pytest.param(("café",), "cafe", True, id="accent-dropped"),
@@ -746,8 +766,8 @@ def test_a_question_with_no_eligible_distractor_is_asked_by_typing(
 )
 def test_a_typed_translation(accepted: tuple[str, ...], answer: str, right: bool) -> None:
     """Case, accents, punctuation and extra whitespace never make a different translation, and
-    any of a word's translations counts; there is no typo tolerance, and typing them all at
-    once is not one of them.
+    any of a word's translations counts, as do several of them separated by commas, each with or
+    without what it has in parentheses; there is no typo tolerance.
 
     Dropping a row here is a weakened contract, like a numeral table: each one is a way an
     answer really arrives, and judging it the wrong way teaches the user something false.
@@ -784,6 +804,24 @@ def test_typed_hangul(direction: Direction, answer: str, right: bool) -> None:
     The rule is `korean/hangul.py`'s match key, so the whole project agrees on "the same word".
     """
     target = make_word(9, "사과", "apple", familiarity=Familiarity.WELL)
+
+    assert is_right(drawn(target, direction), TypedAnswer(answer)) is right
+
+
+@pytest.mark.parametrize("direction", TO_HANGUL, ids=TO_HANGUL_IDS)
+@pytest.mark.parametrize(
+    ("answer", "right"),
+    [
+        pytest.param("하다", True, id="parentheses-left-out"),
+        pytest.param("하다 (do)", True, id="parentheses-kept"),
+        pytest.param("do", False, id="only-the-parentheses"),
+    ],
+)
+def test_typed_hangul_with_or_without_its_parentheses(
+    direction: Direction, answer: str, right: bool
+) -> None:
+    """A Korean side with a parenthesised part accepts the answer with or without it."""
+    target = make_word(9, "하다 (do)", "to do", familiarity=Familiarity.WELL)
 
     assert is_right(drawn(target, direction), TypedAnswer(answer)) is right
 

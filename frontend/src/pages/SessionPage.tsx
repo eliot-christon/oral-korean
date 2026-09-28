@@ -414,7 +414,7 @@ function PresentationView({
       <p lang="ko" className="font-display text-5xl text-primary">
         {presentation.korean}
       </p>
-      <p className="text-lg">{presentation.translations.join('; ')}</p>
+      <p className="text-lg">{presentation.translations.join(', ')}</p>
       <AudioButton url={presentation.audio_url} label="Play the word" />
       <Button className="self-end" disabled={busy} onClick={onContinue}>
         Continue
@@ -536,7 +536,7 @@ function VerdictView({ question, verdict }: { question: Question; verdict: Sessi
       <Feedback tone={verdict.correct ? 'success' : 'error'}>
         <p>{verdict.correct ? 'Right!' : 'Not this time.'}</p>
         <p>
-          <span lang="ko">{verdict.korean}</span>: {verdict.translations.join('; ')}
+          <span lang="ko">{verdict.korean}</span>: {verdict.translations.join(', ')}
         </p>
         {wrongChoice && <p>The right answer: {verdict.correct_option}</p>}
       </Feedback>
@@ -599,7 +599,7 @@ function SummaryView({ summary, onAgain }: { summary: SessionEnd['summary']; onA
               <span lang="ko" className="font-bold">
                 {word.korean}
               </span>
-              : {word.translations.join('; ')}
+              : {word.translations.join(', ')}
             </span>
             <ul className="flex flex-col gap-0.5 text-sm">
               {word.directions.map((result) => (

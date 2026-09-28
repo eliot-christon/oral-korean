@@ -142,7 +142,7 @@ test('shows the word, its translations and its tags, the Korean marked as Korean
 
   const heading = await screen.findByRole('heading', { level: 1, name: '사과' })
   expect(heading.getAttribute('lang')).toBe('ko')
-  expect(screen.getByText('apple; pomme')).toBeDefined()
+  expect(screen.getByText('apple, pomme')).toBeDefined()
   expect(screen.getByText('food')).toBeDefined()
 })
 
@@ -325,12 +325,12 @@ function editField(name: string | RegExp): HTMLInputElement {
   return screen.getByRole('textbox', { name }) as HTMLInputElement
 }
 
-test('editing starts from the word as typed: translations with semicolons, tags with commas', async () => {
+test('editing starts from the word as typed: translations and tags with commas', async () => {
   stubWrites({ status: 200, body: {} })
   await openEdit()
 
   expect(editField('Korean').value).toBe('사과')
-  expect(editField('Translations').value).toBe('apple; pomme')
+  expect(editField('Translations').value).toBe('apple, pomme')
   expect(editField(/tags/i).value).toBe('food')
   expect(document.activeElement).toBe(editField('Korean'))
 })
@@ -342,7 +342,7 @@ test('saving sends a PUT with the translations as typed, then shows the saved wo
   const writes = stubWrites({ status: 200, body: saved })
   await openEdit()
 
-  fireEvent.change(editField('Translations'), { target: { value: 'apple; pomme; Apfel' } })
+  fireEvent.change(editField('Translations'), { target: { value: 'apple, pomme, Apfel' } })
   fireEvent.change(editField(/tags/i), { target: { value: 'food, fruit' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
@@ -350,9 +350,9 @@ test('saving sends a PUT with the translations as typed, then shows the saved wo
   expect(writes()[0]).toEqual({
     url: '/api/vocab/words/7',
     method: 'PUT',
-    body: { korean: '사과', translations: 'apple; pomme; Apfel', tags: ['food', 'fruit'] },
+    body: { korean: '사과', translations: 'apple, pomme, Apfel', tags: ['food', 'fruit'] },
   })
-  expect(await screen.findByText('apple; pomme; Apfel')).toBeDefined()
+  expect(await screen.findByText('apple, pomme, Apfel')).toBeDefined()
   expect(screen.getByText('fruit')).toBeDefined()
   expect(screen.getByRole('status').textContent).toBe('Saved.')
   expect(screen.queryByRole('textbox', { name: 'Translations' })).toBeNull()

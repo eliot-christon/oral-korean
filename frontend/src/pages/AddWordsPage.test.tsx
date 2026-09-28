@@ -115,7 +115,7 @@ async function choosePasteMode(): Promise<void> {
   fireEvent.click(await screen.findByRole('button', { name: 'Paste a list' }))
 }
 
-const PASTED = '사과 ; apple\n집 ; house; home'
+const PASTED = '사과 ; apple\n집 ; house, home'
 
 beforeEach(() => {
   window.history.replaceState(null, '', '#/words/new')

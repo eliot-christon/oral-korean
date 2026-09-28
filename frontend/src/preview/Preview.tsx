@@ -173,7 +173,7 @@ export function Preview() {
             as="textarea"
             lang="ko"
             className="sm:col-span-2"
-            defaultValue={'사과 ; apple\n집 ; house; home'}
+            defaultValue={'사과 ; apple\n집 ; house, home'}
           />
         </div>
       </Section>

@@ -30,7 +30,7 @@ function WordText({ word }: { word: QueuedWord }) {
       <span lang="ko" className="font-bold">
         {word.korean}
       </span>{' '}
-      <span className="text-muted">{word.translations.join('; ')}</span>
+      <span className="text-muted">{word.translations.join(', ')}</span>
     </span>
   )
 }

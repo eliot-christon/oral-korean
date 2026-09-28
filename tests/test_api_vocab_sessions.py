@@ -576,7 +576,7 @@ def test_a_word_due_in_two_directions_is_asked_in_both_and_done_after_the_second
     배 is due in all four. A review with everything ticked asks the target twice and 배 four
     times, and the target counts as done only once both its questions are answered."""
     client = harness.client
-    add_word(client, KOREAN, "; ".join(TRANSLATIONS), tags=["target"], familiarity="well")
+    add_word(client, KOREAN, ", ".join(TRANSLATIONS), tags=["target"], familiarity="well")
     add_word(client, *PEAR, tags=["other"], familiarity="well")
     move_to_well_due_date(harness)
     by_voice = started(client, "review", tag="target", directions=[V2H, V2T])

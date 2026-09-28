@@ -28,6 +28,8 @@ appending a migration.
 
 from __future__ import annotations
 
+import json
+import re
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
@@ -206,11 +208,45 @@ migration. Every word has a place, learned or not: only the queue's readers skip
 with nothing left to learn.
 """
 
+def _migration_5(connection: sqlite3.Connection) -> None:
+    """Translations separated by commas (2026-09-28): each stored translation is cut at every
+    `,` or `;` outside parentheses, so `rat, mouse`, typed when only `;` separated two, becomes
+    `rat` and `mouse`. Parts are trimmed, blanks dropped, and a repeat (compared without case)
+    dropped after its first spelling. Spelled out rather than calling
+    `exercises.vocab_words.split_translations`: a shipped migration must not change when the
+    code does.
+    """
+    rows = connection.execute("SELECT id, translations FROM words").fetchall()
+    updates = []
+    for word_id, stored in rows:
+        translations = json.loads(stored)
+        split: list[str] = []
+        seen: set[str] = set()
+        for translation in translations:
+            for part in _split_outside_parentheses(translation):
+                if part.casefold() not in seen:
+                    seen.add(part.casefold())
+                    split.append(part)
+        if split and split != translations:
+            updates.append((json.dumps(split, ensure_ascii=False), word_id))
+    connection.executemany("UPDATE words SET translations = ? WHERE id = ?", updates)
+
+
+def _split_outside_parentheses(text: str) -> list[str]:
+    """`text` cut at every `,` or `;` outside parentheses, trimmed, blanks dropped."""
+    return [stripped for part in _OUTSIDE_SEPARATOR.split(text) if (stripped := part.strip())]
+
+
+_OUTSIDE_SEPARATOR: Final = re.compile(r"[,;](?![^(]*\))")
+"""A `,` or `;` with no `)` ahead of it before the next `(`: not inside parentheses."""
+
+
 MIGRATIONS: Final[tuple[Migration, ...]] = (
     _MIGRATION_1,
     _MIGRATION_2,
     _migration_3,
     _MIGRATION_4,
+    _migration_5,
 )
 """Every migration, in order. Append-only once shipped: see the module docstring."""
 

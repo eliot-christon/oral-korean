@@ -299,7 +299,18 @@ def test_same_memory_returns_a_fresh_mapping_each_call() -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
+        pytest.param("house, home", ("house", "home"), id="comma-space"),
+        pytest.param("house,home", ("house", "home"), id="comma-no-space"),
         pytest.param("house; home", ("house", "home"), id="semicolon-space"),
+        pytest.param("house, home; hut", ("house", "home", "hut"), id="comma-and-semicolon"),
+        pytest.param(
+            "I (formal), me (formal)", ("I (formal)", "me (formal)"), id="parentheses-kept"
+        ),
+        pytest.param(
+            "to want (a thing, a person), to wish",
+            ("to want (a thing, a person)", "to wish"),
+            id="comma-inside-parentheses-separates-nothing",
+        ),
         pytest.param("house;home", ("house", "home"), id="semicolon-no-space"),
         pytest.param(
             " house ;  home ; ", ("house", "home"), id="trailing-semicolon-adds-nothing"
@@ -310,7 +321,8 @@ def test_same_memory_returns_a_fresh_mapping_each_call() -> None:
     ],
 )
 def test_parse_translations(text: str, expected: tuple[str, ...]) -> None:
-    """Split on `;`, trim, drop blanks and case-insensitive repeats, keep the order."""
+    """Split on `,` or `;` outside parentheses, trim, drop blanks and case-insensitive
+    repeats, keep the order."""
     assert parse_translations(text) == expected
 
 
@@ -329,7 +341,7 @@ def test_parse_translations_refuses_when_nothing_remains(text: str) -> None:
 
 def test_parse_translations_refuses_over_the_translation_limit() -> None:
     """Built from `MAX_TRANSLATIONS`, not the number typed out, so the limit stays the guard."""
-    text = "; ".join(f"word{n}" for n in range(MAX_TRANSLATIONS + 1))
+    text = ", ".join(f"word{n}" for n in range(MAX_TRANSLATIONS + 1))
 
     assert str(MAX_TRANSLATIONS) in only_problem(translations_refusal(text)).message
 

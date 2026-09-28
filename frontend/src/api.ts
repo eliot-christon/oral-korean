@@ -283,7 +283,7 @@ export async function fetchTags(): Promise<TagsResponse> {
   return parseJsonOrThrow<TagsResponse>(response, 'Could not load the tags.')
 }
 
-/** What the user typed for one word: the translations exactly as typed (`house; home`). */
+/** What the user typed for one word: the translations exactly as typed (`house, home`). */
 export interface WordFields {
   korean: string
   translations: string

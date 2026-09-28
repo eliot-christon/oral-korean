@@ -144,7 +144,7 @@ test('one card per word: New for a word never reviewed, due now, and in 3 days',
   const newCard = cardFor('사과', all)
   expect(newCard.textContent).toContain('New')
   expect(newCard.textContent).not.toContain('0%')
-  expect(newCard.textContent).toContain('apple; pomme')
+  expect(newCard.textContent).toContain('apple, pomme')
   expect(cardFor('학교', all).textContent).toContain('due now')
   expect(cardFor('학교', all).textContent).toContain('20%')
   expect(cardFor('물', all).textContent).toContain('in 3 days')

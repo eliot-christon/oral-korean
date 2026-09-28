@@ -98,7 +98,7 @@ def test_the_migration_only_adds_a_table(tmp_path: Path) -> None:
         after = raw.execute("SELECT name, sql FROM sqlite_master ORDER BY name").fetchall()
         version = raw.execute("PRAGMA user_version").fetchone()[0]
 
-    assert version == len(MIGRATIONS) == 4
+    assert version == len(MIGRATIONS) == 5
     assert set(before) < set(after)
     assert {name for name, _ in set(after) - set(before)} >= {"learn_queue"}
 
