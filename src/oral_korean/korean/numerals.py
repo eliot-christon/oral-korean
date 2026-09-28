@@ -89,6 +89,23 @@ _SINO_MYRIAD: Final = "만"
 
 _NATIVE_UNITS: Final = ("", "하나", "둘", "셋", "넷", "다섯", "여섯", "일곱", "여덟", "아홉")
 _NATIVE_TENS: Final = ("", "열", "스물", "서른", "마흔", "쉰", "예순", "일흔", "여든", "아흔")
+# The attributive (counter) form: 하나 to 넷 lose their last sound before a counter word
+# (한 시, 세 개), and every other unit is unchanged.
+_NATIVE_ATTRIBUTIVE_UNITS: Final = (
+    "",
+    "한",
+    "두",
+    "세",
+    "네",
+    "다섯",
+    "여섯",
+    "일곱",
+    "여덟",
+    "아홉",
+)
+# 스물 contracts to 스무 only when twenty stands alone (스무 살): once a unit follows, the
+# ten keeps its full form (스물한 살), so this replaces the whole word for 20 alone.
+_NATIVE_ATTRIBUTIVE_TWENTY: Final = "스무"
 
 
 def supported_range(system: NumeralSystem) -> NumberRange:
@@ -138,8 +155,33 @@ def render_number(value: int, system: NumeralSystem) -> str:
     return _render_sino(value)
 
 
-def _render_native(value: int) -> str:
-    """Render 1 to 99 in native Korean, irregular tens included."""
+def render_native_attributive(value: int) -> str:
+    """Return `value` in native Korean's attributive (counter) form: 한, 두, 세, 네, 스무 ...
+
+    The form a native numeral takes in front of a counter word: three o'clock is 세 시,
+    never 셋 시. It differs from `render_number(value, NumeralSystem.NATIVE)` only where the
+    last digit is 1 to 4, and for 20 on its own. Sino-Korean has no such form, so there is
+    no `system` parameter. The counter-specific variants (석 달, 넉 달, 서 말) belong to
+    particular counters and are not produced here.
+
+    Raises:
+        NumeralError: `value` is not an integer, or is outside native Korean's range.
+    """
+    if not isinstance(value, int):
+        raise NumeralError(
+            f"Cannot render {value!r} in native-Korean attributive form: expected an "
+            f"integer, got {type(value).__name__}."
+        )
+    _check_native_range(value)
+
+    if value == 20:
+        return _NATIVE_ATTRIBUTIVE_TWENTY
+    tens, units = divmod(value, 10)
+    return _NATIVE_TENS[tens] + _NATIVE_ATTRIBUTIVE_UNITS[units]
+
+
+def _check_native_range(value: int) -> None:
+    """Refuse `value` unless native Korean can express it, bare or attributive."""
     span = _SUPPORTED_RANGES[NumeralSystem.NATIVE]
     if not span.minimum <= value <= span.maximum:
         raise NumeralError(
@@ -147,6 +189,10 @@ def _render_native(value: int) -> str:
             f"stops at 99, so it only covers {span.minimum} to {span.maximum}."
         )
 
+
+def _render_native(value: int) -> str:
+    """Render 1 to 99 in native Korean, irregular tens included."""
+    _check_native_range(value)
     tens, units = divmod(value, 10)
     return _NATIVE_TENS[tens] + _NATIVE_UNITS[units]
 

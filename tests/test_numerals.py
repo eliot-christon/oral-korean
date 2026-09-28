@@ -48,6 +48,15 @@ Two decisions the ticket leaves open, taken here rather than silently:
    rejected. Those two are only consistent if 0 is inside Sino's supported range, and 영
    is a real Sino-Korean word, so it costs nothing.
 
+The attributive (counter) form of native numerals was added later, by time-exercise T01,
+framed the same way, before its code existed:
+
+- `oral_korean.korean.numerals.render_native_attributive(value: int) -> str` - native
+  Korean in front of a counter: 한, 두, 세, 네, and 스무 for twenty on its own. A separate
+  function rather than a flag on `render_number`, whose signature stays pinned: only native
+  numerals have an attributive form, so it takes no system. Its domain is
+  `supported_range(NumeralSystem.NATIVE)`, and its refusals are the bare renderer's.
+
 Everything here is a pure function call: no file I/O, no network, no TTS, no patching.
 """
 
@@ -65,6 +74,7 @@ from oral_korean.korean.numerals import (
     NumberRange,
     NumeralError,
     NumeralSystem,
+    render_native_attributive,
     render_number,
     supported_range,
 )
@@ -143,6 +153,52 @@ NATIVE_CASES: list[tuple[int, str]] = [
     (99, "아흔아홉"),
 ]
 
+# Native Korean in front of a counter (time-exercise T01): the ticket's table, whole. The
+# units 1 to 4 lose their final syllable or consonant, twenty contracts to 스무 only when it
+# stands alone, and every other value keeps its bare form. Each irregular ten appears both
+# alone and with a contracting unit, since 스무한 and 스물 are the plausible wrong answers.
+NATIVE_ATTRIBUTIVE_CASES: list[tuple[int, str]] = [
+    (1, "한"),  # not 하나
+    (2, "두"),  # not 둘
+    (3, "세"),  # not 셋
+    (4, "네"),  # not 넷
+    (5, "다섯"),  # unchanged
+    (6, "여섯"),
+    (7, "일곱"),
+    (8, "여덟"),
+    (9, "아홉"),
+    (10, "열"),
+    (11, "열한"),
+    (12, "열두"),
+    (13, "열세"),
+    (14, "열네"),
+    (15, "열다섯"),
+    (19, "열아홉"),
+    (20, "스무"),  # not 스물: twenty alone contracts
+    (21, "스물한"),  # not 스무한: the ten keeps its full form once a unit follows
+    (22, "스물두"),
+    (23, "스물세"),
+    (24, "스물네"),
+    (25, "스물다섯"),
+    (30, "서른"),
+    (31, "서른한"),
+    (33, "서른세"),
+    (40, "마흔"),
+    (42, "마흔두"),
+    (44, "마흔네"),
+    (50, "쉰"),
+    (51, "쉰한"),
+    (60, "예순"),
+    (62, "예순두"),
+    (70, "일흔"),
+    (73, "일흔세"),
+    (80, "여든"),
+    (84, "여든네"),
+    (90, "아흔"),
+    (91, "아흔한"),
+    (99, "아흔아홉"),
+]
+
 SYSTEMS = list(NumeralSystem)
 SYSTEM_IDS = [system.name.lower() for system in SYSTEMS]
 
@@ -189,8 +245,9 @@ def test_numeral_error_is_a_value_error() -> None:
     [
         (render_number, ["value", "system"], []),
         (supported_range, ["system"], []),
+        (render_native_attributive, ["value"], []),
     ],
-    ids=["render_number", "supported_range"],
+    ids=["render_number", "supported_range", "render_native_attributive"],
 )
 def test_public_signatures_keep_their_agreed_shape(
     function: Callable[..., object], positional: list[str], keyword_only: list[str]
@@ -232,6 +289,57 @@ def test_sino_korean_renders_the_highest_value_below_its_ceiling() -> None:
 def test_native_korean_rendering(value: int, expected: str) -> None:
     """The native-Korean table, irregular tens included."""
     assert render_number(value, NumeralSystem.NATIVE) == expected
+
+
+# ---------------------------------------------------------------------------------
+# Rendering: native Korean, attributive (counter) form
+# ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    NATIVE_ATTRIBUTIVE_CASES,
+    ids=[f"attributive-{value}" for value, _ in NATIVE_ATTRIBUTIVE_CASES],
+)
+def test_native_korean_attributive_rendering(value: int, expected: str) -> None:
+    """The counter-form table: 세 시, never 셋 시; 스무 살, but 스물한 살."""
+    assert render_native_attributive(value) == expected
+
+
+def test_the_attributive_form_differs_from_the_bare_one_exactly_where_korean_says() -> None:
+    """Across the whole native domain: last digit 1 to 4, or twenty alone, and nowhere else.
+
+    The expected set comes from the digits of each value, never from the code under test.
+    A form contracted one value too far (스무한, 다서) or one value too few (셋 left bare)
+    shows up here even where the spot-check table has no case.
+    """
+    span = supported_range(NumeralSystem.NATIVE)
+    domain = range(span.minimum, span.maximum + 1)
+    expected_to_differ = {value for value in domain if value % 10 in (1, 2, 3, 4) or value == 20}
+
+    differing = {
+        value
+        for value in domain
+        if render_native_attributive(value) != render_number(value, NumeralSystem.NATIVE)
+    }
+
+    assert len(expected_to_differ) == 41
+    assert differing == expected_to_differ
+
+
+def test_every_native_value_has_its_own_hangul_attributive_form() -> None:
+    """Every attributive form speakable, and no two alike, over the supported range.
+
+    Two values sharing a counter form would make the time exercise speak one hour and
+    accept another, the same silent failure the bare-form sweep guards against.
+    """
+    span = supported_range(NumeralSystem.NATIVE)
+    rendered = {
+        value: render_native_attributive(value) for value in range(span.minimum, span.maximum + 1)
+    }
+
+    assert [value for value, text in rendered.items() if not is_hangul_word(text)] == []
+    assert len(set(rendered.values())) == len(rendered)
 
 
 # ---------------------------------------------------------------------------------
@@ -352,6 +460,37 @@ def test_non_integer_values_are_rejected_in_both_systems(
     """
     with pytest.raises(NumeralError):
         render_number(cast(int, value), system)
+
+
+@pytest.mark.parametrize("value", [0, 100], ids=["zero", "hundred"])
+def test_the_attributive_form_rejects_values_outside_the_native_range(value: int) -> None:
+    """No zero and nothing past 99 in front of a counter either, and the message says so.
+
+    Same message requirements as the bare native refusal: the system and both bounds.
+    """
+    with pytest.raises(NumeralError) as excinfo:
+        render_native_attributive(value)
+
+    message = str(excinfo.value).lower()
+    assert "native" in message
+    assert "1" in message
+    assert "99" in message
+
+
+def test_the_attributive_form_rejects_a_negative_value() -> None:
+    """-1 is refused, not rendered as 한 with its sign dropped."""
+    with pytest.raises(NumeralError):
+        render_native_attributive(-1)
+
+
+@pytest.mark.parametrize("value", [4.5, 42.0], ids=["4.5", "42.0"])
+def test_the_attributive_form_rejects_non_integer_values(value: float) -> None:
+    """4.5 is not truncated to 네, and a whole float is still not an integer.
+
+    `cast` for the same reason as the bare renderer's test: the value arrives untyped.
+    """
+    with pytest.raises(NumeralError):
+        render_native_attributive(cast(int, value))
 
 
 @pytest.mark.parametrize(
