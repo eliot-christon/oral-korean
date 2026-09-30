@@ -9,8 +9,16 @@ from fastapi import APIRouter, FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from oral_korean.api.routes import health, numbers, time_of_day, vocab_sessions, vocab_words
+from oral_korean.api.routes import (
+    dates,
+    health,
+    numbers,
+    time_of_day,
+    vocab_sessions,
+    vocab_words,
+)
 from oral_korean.config import AppConfig
+from oral_korean.exercises.dates import DateQuestion
 from oral_korean.exercises.numbers import NumberQuestion
 from oral_korean.exercises.time_of_day import TimeQuestion
 from oral_korean.storage.database import Database
@@ -59,6 +67,8 @@ def create_app(
     app.state.number_questions = number_questions
     time_questions: dict[str, TimeQuestion] = {}
     app.state.time_questions = time_questions
+    date_questions: dict[str, DateQuestion] = {}
+    app.state.date_questions = date_questions
     vocab_sessions_in_progress: dict[str, vocab_sessions.VocabSession] = {}
     app.state.vocab_sessions = vocab_sessions_in_progress
     vocab_items: dict[str, vocab_sessions.PendingVocabItem] = {}
@@ -77,6 +87,7 @@ def create_app(
     api_router.include_router(health.router)
     api_router.include_router(numbers.router)
     api_router.include_router(time_of_day.router)
+    api_router.include_router(dates.router)
     api_router.include_router(vocab_words.router)
     api_router.include_router(vocab_sessions.router)
 
