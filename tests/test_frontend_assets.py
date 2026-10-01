@@ -86,6 +86,14 @@ REQUIRED_TIME_PATHS = (
     f"/api/exercises/time/questions/{PARAM_MARKER}/answer",
 )
 
+# date-exercise T04: the calendar exercise's year window, create-question and answer paths.
+# Its audio path is left out for the same reason as the numbers one.
+REQUIRED_DATE_PATHS = (
+    "/api/exercises/dates/year-range",
+    "/api/exercises/dates/questions",
+    f"/api/exercises/dates/questions/{PARAM_MARKER}/answer",
+)
+
 # vocab-words-ui T02: the word list (and, T03, adding one word), one word with its history
 # (and, T03, editing and deleting it: same path, other methods, which a literal cannot tell
 # apart), and the tags for the filter. T03: a pasted list, and the familiarity catalogue.
@@ -145,6 +153,14 @@ def test_the_required_time_paths_are_referenced_somewhere_in_the_frontend() -> N
     frontend_literals = frontend_api_literals()
 
     missing = [path for path in REQUIRED_TIME_PATHS if path not in frontend_literals]
+
+    assert not missing, f"frontend/src/ does not yet reference: {missing}"
+
+
+def test_the_required_date_paths_are_referenced_somewhere_in_the_frontend() -> None:
+    """`frontend/src/` must actually call the calendar exercise's year window,
+    create-question and answer routes."""
+    missing = [path for path in REQUIRED_DATE_PATHS if path not in frontend_api_literals()]
 
     assert not missing, f"frontend/src/ does not yet reference: {missing}"
 
