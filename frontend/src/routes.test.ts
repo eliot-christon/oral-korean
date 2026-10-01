@@ -45,6 +45,10 @@ describe('parseRoute', () => {
     ['#/time', { page: 'time' }],
     ['#/time/', { page: 'time' }],
     ['#/time/x', NOT_FOUND],
+    ['#/dates', { page: 'dates' }],
+    ['#/dates/', { page: 'dates' }],
+    ['#/dates/x', NOT_FOUND],
+    ['#/date', NOT_FOUND],
     ['#/learn', { page: 'learn' }],
     ['#/learn/', { page: 'learn' }],
     ['#/review', { page: 'review' }],
@@ -59,6 +63,7 @@ describe('routeHref', () => {
   it.each<LinkableRoute>([
     NUMBERS,
     { page: 'time' },
+    { page: 'dates' },
     WORDS,
     { page: 'addWords' },
     { page: 'word', id: 12 },

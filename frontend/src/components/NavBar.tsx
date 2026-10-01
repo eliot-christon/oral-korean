@@ -12,8 +12,8 @@ export interface NavItem {
 // what a screen reader hears and what the eye sees cannot disagree. A filled pill as well as
 // a colour: colour is never the only signal.
 const LINK =
-  'flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-field px-3 py-1.5 ' +
-  'text-sm font-bold text-muted transition-colors duration-150 hover:text-primary ' +
+  'flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-field px-1 py-1.5 ' +
+  'text-xs font-bold text-muted transition-colors duration-150 hover:text-primary ' +
   'focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-primary ' +
   'aria-[current=page]:bg-primary-soft aria-[current=page]:text-primary ' +
   'sm:min-h-12 sm:flex-row sm:gap-2 sm:rounded-full sm:px-5 sm:text-base'
