@@ -3,7 +3,7 @@
 A Korean listening-comprehension trainer.
 
 The goal is a set of small exercises that play or read out Korean audio and check whether
-you understood it. More exercise types are planned over time (dates, basic phrases, ...).
+you understood it. More exercise types are planned over time (basic phrases, ...).
 
 ## What it does today
 
@@ -27,12 +27,19 @@ or any minute. Midnight and noon are in (오전 열두 시, 오후 열두 시), 
 read either way (세 시 or 세 시 정각, 세 시 반 or 세 시 삼십 분). Here too the browser gets
 the time only with the verdict.
 
+**Dates**, on a calendar: the app speaks a date in Korean (구월 이십일 일, and about one
+question in two with the year: 이천이십육 년 구월 이십일 일) and you pick the day on a
+calendar, by tapping it or with the keyboard, browsing month by month. When the year is
+spoken, a year control appears too, from 1950 to 2049. Watch June and October: 유월 and
+시월, not 육월 and 십월, while the 6th and the 10th stay 육 일 and 십 일. The browser learns
+only whether the year is asked, and gets the date with the verdict.
+
 **A vocabulary trainer** for your own words: you add them, then learn and review them in
 short sessions, heard as well as read.
 
 Speech is [MeloTTS](https://github.com/myshell-ai/MeloTTS) (MIT), run locally with the
-Korean checkpoint. Generated audio is cached on disk, so a number, a time or a word heard
-twice is synthesised once.
+Korean checkpoint. Generated audio is cached on disk, so a number, a time, a date or a word
+heard twice is synthesised once.
 
 ## The vocabulary trainer
 
@@ -192,7 +199,7 @@ builds. CI runs both sides on every push and pull request.
 main.py                  dev launcher
 src/oral_korean/
   api/                   HTTP layer: FastAPI app, routes, helpers exercises share
-  exercises/             exercise logic: numbers, time of day, vocabulary words and sessions
+  exercises/             exercise logic: numbers, time of day, dates, vocabulary words and sessions
   korean/                language primitives shared between exercises
   srs/                   word memory with FSRS: seeds, grades, scores, statistics
   storage/               the vocabulary in SQLite, with numbered migrations
@@ -204,9 +211,9 @@ tests/                   pytest suite
 The directories mark the seams between concerns. There is deliberately no plugin registry
 or exercise base class: the second exercise showed two helpers worth sharing (pending
 questions by opaque id, and synthesis with a text-free error), and nothing more. The third,
-the clock, reused those two and needed nothing else.
+the clock, reused those two and needed nothing else, and so did the fourth, the calendar.
 
 ## Status
 
-Early but working. The number and clock exercises and the vocabulary trainer are complete;
-dates come next.
+Early but working. The number, clock and calendar exercises and the vocabulary trainer are
+complete.
