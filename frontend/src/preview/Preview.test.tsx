@@ -63,6 +63,10 @@ describe('Preview', () => {
     // The clock (time-exercise T04): both hands as sliders.
     expect(screen.getAllByRole('slider').length).toBe(2)
 
+    // The calendar (date-exercise T03): a grid of days, with its year control.
+    expect(screen.getByRole('grid')).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: 'Year' })).toBeTruthy()
+
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 })

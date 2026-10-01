@@ -2,11 +2,12 @@ import { useState, type ReactNode } from 'react'
 
 import { Badge } from '../components/Badge'
 import { Button } from '../components/Button'
+import { CalendarPicker, type CalendarValue } from '../components/CalendarPicker'
 import { Card } from '../components/Card'
 import { ClockFace, type ClockValue } from '../components/ClockFace'
 import { Feedback } from '../components/Feedback'
 import { Field } from '../components/Field'
-import { ArrowDownIcon, BookIcon, KeypadIcon, LearnIcon, ReplayIcon, ReviewIcon } from '../components/icons'
+import { ArrowDownIcon, BookIcon, CalendarIcon, KeypadIcon, LearnIcon, ReplayIcon, ReviewIcon } from '../components/icons'
 import { NavBar } from '../components/NavBar'
 import { TextLink } from '../components/TextLink'
 
@@ -58,6 +59,8 @@ export function Preview() {
   const [feedbackRun, setFeedbackRun] = useState(0)
   const [clock, setClock] = useState<ClockValue>({ period: 'am', hour: 12, minute: 0 })
   const [minuteStep, setMinuteStep] = useState(5)
+  const [calendar, setCalendar] = useState<CalendarValue | null>(null)
+  const [calendarAsksYear, setCalendarAsksYear] = useState(true)
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:py-12">
@@ -193,6 +196,7 @@ export function Preview() {
             className="rounded-field border border-line/30"
             items={[
               { href: '#numbers', label: 'Numbers', icon: <KeypadIcon />, current: true },
+              { href: '#dates', label: 'Dates', icon: <CalendarIcon />, current: false },
               { href: '#words', label: 'Words', icon: <BookIcon />, current: false },
               { href: '#learn', label: 'Learn', icon: <LearnIcon />, current: false },
               { href: '#review', label: 'Review', icon: <ReviewIcon />, current: false },
@@ -235,6 +239,37 @@ export function Preview() {
             ))}
           </div>
           <ClockFace value={clock} minuteStep={minuteStep} onChange={setClock} />
+        </div>
+      </Section>
+
+      <Section title="Calendar">
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-muted">
+            Tap a day, browse with the month buttons, or focus a day and use the arrows, Page Up
+            and Page Down. The year control shows only when the year is asked.
+          </p>
+          <div role="group" aria-label="Calendar mode" className="flex flex-wrap gap-2">
+            {[true, false].map((asksYear) => (
+              <Button
+                key={String(asksYear)}
+                variant={calendarAsksYear === asksYear ? 'secondary' : 'subtle'}
+                aria-pressed={calendarAsksYear === asksYear}
+                onClick={() => {
+                  setCalendarAsksYear(asksYear)
+                  setCalendar(null)
+                }}
+              >
+                {asksYear ? 'With the year' : 'Without the year'}
+              </Button>
+            ))}
+          </div>
+          <CalendarPicker
+            key={String(calendarAsksYear)}
+            value={calendar}
+            onChange={setCalendar}
+            yearRange={calendarAsksYear ? { minimum: 1950, maximum: 2049 } : null}
+            initialMonth={{ year: 2026, month: 9 }}
+          />
         </div>
       </Section>
 
