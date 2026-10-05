@@ -48,14 +48,13 @@ import dataclasses
 import importlib
 import importlib.util
 import random
-import unicodedata
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from types import ModuleType
 
 import pytest
-from conftest import FORBIDDEN_IMPORTS, imported_module_names, signature_shape
+from conftest import FORBIDDEN_IMPORTS, imported_module_names, nfd, signature_shape
 
 from oral_korean.exercises.vocab import (
     TYPING_STABILITY_DAYS,
@@ -189,17 +188,6 @@ def typed_question(korean: str, *translations: str) -> VocabQuestion:
 def is_right(question: VocabQuestion, answer: SubmittedAnswer) -> bool:
     """Whether `answer` is right for `question`, dropping the rest of the judgement."""
     return bool(judge_answer(question, answer).correct)
-
-
-def nfd(text: str, length: int) -> str:
-    """`text` decomposed, checked to hold exactly `length` code points.
-
-    The length is the proof it really is decomposed: a precomposed string left here by mistake
-    would be shorter, and the test using it would pass for the wrong reason.
-    """
-    result = unicodedata.normalize("NFD", text)
-    assert len(result) == length, f"{text!r} decomposes to {len(result)} code points, not {length}"
-    return result
 
 
 def answered_in_turn(
@@ -449,9 +437,11 @@ def test_the_direction_never_changes_the_grade_of_a_typed_answer(direction: Dire
     """Hearing a word is harder than reading it, but each direction has its own memory
     (vocab-directions T01), so the difficulty is already the memory's, never the grade's."""
     question = drawn(KNOWN_JIP, direction)
+    # A wrong answer in the script the direction asks for: the other script is refused.
+    wrong_text = "완전히 다른" if direction in TO_HANGUL else "something else"
 
     right = judge_answer(question, TypedAnswer(question.accepted_answers[0]))
-    wrong = judge_answer(question, TypedAnswer("완전히 다른"))
+    wrong = judge_answer(question, TypedAnswer(wrong_text))
 
     assert question.mode is AnswerMode.TYPING
     assert grade_for(correct=right.correct, mode=question.mode) is Grade.GOOD
@@ -791,17 +781,19 @@ def test_a_typed_translation(accepted: tuple[str, ...], answer: str, right: bool
         pytest.param("사과.", True, id="a-trailing-full-stop"),
         pytest.param("샤과", False, id="one-vowel-off"),
         pytest.param("사과요", False, id="an-extra-syllable"),
-        pytest.param("ㅅㅏㄱㅘ", False, id="compatibility-jamo-never-compose"),
-        pytest.param("apple", False, id="the-translation-instead"),
+        pytest.param("사과 apple", False, id="the-word-and-its-translation"),
         pytest.param("", False, id="nothing-typed"),
     ],
 )
 def test_typed_hangul(direction: Direction, answer: str, right: bool) -> None:
     """Spacing, punctuation and decomposition never make a different word - a phone keyboard
     sends decomposed jamo, and 띄어쓰기 is inconsistent among native speakers too - while one
-    vowel off is exactly the skill being tested and a string of keyboard jamo is not a word.
+    vowel off is exactly the skill being tested.
 
     The rule is `korean/hangul.py`'s match key, so the whole project agrees on "the same word".
+    A string of keyboard jamo and the translation typed instead used to be rows here, judged
+    wrong; since vocab-answer-script-check they are refused, pinned under "Answering in the
+    wrong script" below.
     """
     target = make_word(9, "사과", "apple", familiarity=Familiarity.WELL)
 
@@ -814,16 +806,21 @@ def test_typed_hangul(direction: Direction, answer: str, right: bool) -> None:
     [
         pytest.param("하다", True, id="parentheses-left-out"),
         pytest.param("하다 (do)", True, id="parentheses-kept"),
-        pytest.param("do", False, id="only-the-parentheses"),
+        pytest.param("하다 (to do)", False, id="other-parentheses"),
     ],
 )
 def test_typed_hangul_with_or_without_its_parentheses(
     direction: Direction, answer: str, right: bool
 ) -> None:
-    """A Korean side with a parenthesised part accepts the answer with or without it."""
+    """A Korean side with a parenthesised part accepts the answer with or without it.
+
+    Typing only the Latin parenthesised part ("do") has no Hangul syllable, so it is refused
+    rather than judged: see `test_a_typed_hangul_answer_with_no_syllable_is_refused`.
+    """
     target = make_word(9, "하다 (do)", "to do", familiarity=Familiarity.WELL)
 
     assert is_right(drawn(target, direction), TypedAnswer(answer)) is right
+
 
 
 # ---------------------------------------------------------------------------------

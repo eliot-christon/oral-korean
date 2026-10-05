@@ -625,7 +625,8 @@ def test_the_end_summary_reports_each_directions_result_and_the_totals_add_up(
         word = owner(item)
         translation = TRANSLATIONS[0] if word == KOREAN else PEAR[1]
         missed = item["scored"] and word == KOREAN and item["direction"] == H2T
-        return {"answer": "감"} if missed else right_for(item, word, translation)
+        # A wrong translation in Latin letters: Hangul here would be refused, not judged.
+        return {"answer": "persimmon"} if missed else right_for(item, word, translation)
 
     items = walk(client, session_id, answer)
     summary = items[-1]["summary"]

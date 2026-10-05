@@ -93,6 +93,8 @@ VERDICT_KEYS: Final = {
     "statistics_after",
 }
 ANSWER_CONTEXT_KEYS: Final = {"direction", "mode", "correct"}
+HANGUL_ONLY: Final = "Type your answer in Hangul."
+LATIN_ONLY: Final = "Type your answer in Latin letters."
 
 
 @pytest.fixture(name="harness")
@@ -346,6 +348,67 @@ def test_a_malformed_answer_is_a_422_and_leaves_the_question_answerable(
     assert word_detail(harness.client, asked.word_id) == before
     right = right_choice(asked.question) if mode == "choice" else right_typed(T2H)
     assert answered(harness.client, asked.item_id, right)["scored"] is True
+
+
+@pytest.mark.parametrize(
+    ("direction", "typed", "detail"),
+    [
+        pytest.param(T2H, "apple", HANGUL_ONLY, id="latin-for-translation-to-hangul"),
+        pytest.param(V2H, "ㅅㅏㄱㅘ", HANGUL_ONLY, id="jamo-for-voice-to-hangul"),
+        pytest.param(H2T, KOREAN, LATIN_ONLY, id="hangul-for-hangul-to-translation"),
+        pytest.param(V2T, "apple ㅁ", LATIN_ONLY, id="a-stray-jamo-for-voice-to-translation"),
+    ],
+)
+def test_an_answer_in_the_wrong_script_is_a_422_naming_the_script_and_scores_nothing(
+    harness: NumbersHarness, direction: str, typed: str, detail: str
+) -> None:
+    """vocab-answer-script-check: a keyboard in the wrong layout is not a lapse. The detail
+    names the script asked for and nothing of the word; the question stays pending, nothing
+    is written, and the same item answered in the right script is then scored exactly once."""
+    asked = ask_by_typing(harness, direction)
+    before = word_detail(harness.client, asked.word_id)
+
+    refused = answer(harness.client, asked.item_id, {"answer": typed})
+
+    assert refused.status_code == 422
+    assert refused.json()["detail"] == detail
+    for needle in [KOREAN, *TRANSLATIONS]:
+        assert needle not in refused.text
+    assert pending_items(harness) == 1
+    assert word_detail(harness.client, asked.word_id) == before
+    verdict = answered(harness.client, asked.item_id, right_typed(direction))
+    assert (verdict["correct"], verdict["scored"]) == (True, True)
+    after = word_detail(harness.client, asked.word_id)
+    rows = [row for row in after["history"] if not row["is_seed"]]
+    assert [(row["direction"], row["grade"]) for row in rows] == [(direction, "good")]
+    assert after["direction_statistics"][direction]["review_count"] == 1
+    assert pending_items(harness) == 0
+
+
+def test_two_wrong_script_answers_in_a_row_are_both_refused(harness: NumbersHarness) -> None:
+    """Refusing consumes nothing, so a user who has not switched keyboards yet is refused
+    again, not judged on the second try."""
+    asked = ask_by_typing(harness, T2H)
+
+    first = answer(harness.client, asked.item_id, {"answer": "apple"})
+    second = answer(harness.client, asked.item_id, {"answer": "apple"})
+
+    assert (first.status_code, second.status_code) == (422, 422)
+    assert [row["is_seed"] for row in word_detail(harness.client, asked.word_id)["history"]] == [
+        True
+    ]
+
+
+@pytest.mark.parametrize("direction", [T2H, H2T])
+def test_a_blank_answer_is_still_wrong_not_a_wrong_script(
+    harness: NumbersHarness, direction: str
+) -> None:
+    """Blank is in neither script: it stays a scored miss on both sides."""
+    asked = ask_by_typing(harness, direction)
+
+    verdict = answered(harness.client, asked.item_id, {"answer": "   "})
+
+    assert (verdict["correct"], verdict["scored"]) == (False, True)
 
 
 def test_answering_a_presentation_is_a_422_and_records_nothing(
