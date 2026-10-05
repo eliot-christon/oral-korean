@@ -54,7 +54,7 @@ from collections.abc import Callable
 import pytest
 from conftest import signature_shape
 
-from oral_korean.korean.hangul import contains_hangul, display_form, match_key
+from oral_korean.korean.hangul import contains_any_hangul, contains_hangul, display_form, match_key
 
 
 def decomposed(text: str, length: int) -> str:
@@ -99,8 +99,8 @@ BLANK_TEXTS = [
 
 @pytest.mark.parametrize(
     "function",
-    [display_form, match_key, contains_hangul],
-    ids=["display_form", "match_key", "contains_hangul"],
+    [display_form, match_key, contains_hangul, contains_any_hangul],
+    ids=["display_form", "match_key", "contains_hangul", "contains_any_hangul"],
 )
 def test_each_operation_takes_one_positional_text(function: Callable[..., object]) -> None:
     """T03 and vocab-sessions call these three by position; the name is part of the contract."""
@@ -358,6 +358,84 @@ def test_contains_hangul(text: str, expected: bool) -> None:
     `is` rather than `==`: the answer is a real bool, not a truthy match or count.
     """
     assert contains_hangul(text) is expected
+
+
+# ---------------------------------------------------------------------------------
+# Contains any Hangul (vocab-answer-script-check)
+# ---------------------------------------------------------------------------------
+#
+# `contains_any_hangul(text: str) -> bool`: true when the text holds any Hangul character at
+# all - a precomposed syllable (U+AC00-U+D7A3), compatibility jamo (U+3130-U+318F), conjoining
+# jamo (U+1100-U+11FF, U+A960-U+A97F, U+D7B0-U+D7FF) or halfwidth Hangul (U+FFA0-U+FFDF).
+# The vocabulary uses it to refuse a translation typed with a Korean keyboard left on, which
+# sends jamo as readily as syllables. Code points are written with `chr()`: several of these
+# characters are invisible or look like their neighbours.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("사과", True, id="word"),
+        pytest.param("T셔츠", True, id="latin-and-hangul"),
+        pytest.param(chr(0xAC00), True, id="first-syllable-u-ac00"),
+        pytest.param(chr(0xD7A3), True, id="last-syllable-u-d7a3"),
+        pytest.param(decomposed("사", 2), True, id="decomposed-syllable"),
+        pytest.param("ㅁ", True, id="compatibility-jamo"),
+        pytest.param("water ㅁ", True, id="latin-and-a-compatibility-jamo"),
+        pytest.param(chr(0x3131), True, id="first-compatibility-letter-u-3131"),
+        pytest.param(chr(0x318E), True, id="last-compatibility-letter-u-318e"),
+        pytest.param(chr(0x1100), True, id="first-conjoining-jamo-u-1100"),
+        pytest.param(chr(0x11FF), True, id="last-conjoining-jamo-u-11ff"),
+        pytest.param(chr(0xA960), True, id="first-extended-a-u-a960"),
+        pytest.param(chr(0xA97C), True, id="last-extended-a-u-a97c"),
+        pytest.param(chr(0xD7B0), True, id="first-extended-b-u-d7b0"),
+        pytest.param(chr(0xD7FB), True, id="last-extended-b-u-d7fb"),
+        pytest.param(chr(0xFFA0), True, id="first-halfwidth-u-ffa0"),
+        pytest.param(chr(0xFFA1), True, id="halfwidth-kiyeok"),
+        pytest.param(chr(0xFFDC), True, id="last-halfwidth-letter-u-ffdc"),
+        pytest.param("", False, id="empty"),
+        pytest.param("   ", False, id="spaces-only"),
+        pytest.param(chr(0x3000), False, id="ideographic-space"),
+        pytest.param("water", False, id="latin"),
+        pytest.param("café", False, id="accented-latin"),
+        pytest.param(decomposed("café", 5), False, id="accented-latin-decomposed"),
+        pytest.param("123", False, id="digits"),
+        pytest.param("?!...", False, id="punctuation"),
+        pytest.param("вода", False, id="cyrillic"),
+        pytest.param("漢字", False, id="hanja"),
+        pytest.param("みず", False, id="hiragana"),
+        pytest.param(chr(0x10FF), False, id="one-below-conjoining-jamo"),
+        pytest.param(chr(0x1200), False, id="one-past-conjoining-jamo"),
+        pytest.param(chr(0x312F), False, id="one-below-compatibility-jamo"),
+        pytest.param(chr(0x3190), False, id="one-past-compatibility-jamo"),
+        pytest.param(chr(0xA95F), False, id="one-below-extended-a"),
+        pytest.param(chr(0xA980), False, id="one-past-extended-a"),
+        pytest.param(chr(0xFF9F), False, id="one-below-halfwidth-hangul"),
+        pytest.param(chr(0xFFE0), False, id="one-past-halfwidth-hangul"),
+    ],
+)
+def test_contains_any_hangul(text: str, expected: bool) -> None:
+    """Every Hangul block counts, syllable or jamo; each block is checked at its assigned
+    ends and one past each end, and no other script, accented Latin included, counts.
+
+    `is` rather than `==`: the answer is a real bool, not a truthy match or count.
+    """
+    assert contains_any_hangul(text) is expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("ㅅㅏ", id="compatibility-jamo"),
+        pytest.param(chr(0x1100), id="lone-conjoining-initial"),
+        pytest.param(chr(0xFFA1), id="halfwidth-jamo"),
+    ],
+)
+def test_jamo_alone_is_hangul_but_not_a_syllable(text: str) -> None:
+    """The two checks differ exactly here: `contains_hangul` is unchanged and still wants a
+    syllable, while `contains_any_hangul` sees the jamo a keyboard typed."""
+    assert contains_any_hangul(text) is True
+    assert contains_hangul(text) is False
 
 
 # ---------------------------------------------------------------------------------

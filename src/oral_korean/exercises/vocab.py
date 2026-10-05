@@ -313,10 +313,30 @@ def _judge_choice(choices: Choices, answer: SubmittedAnswer) -> bool:
 def _judge_typed(question: VocabQuestion, answer: SubmittedAnswer) -> bool:
     if not isinstance(answer, TypedAnswer):
         raise MalformedAnswerError("A typing question needs typed text.")
+    _check_script(question, answer.text)
     if _answer_side(question.direction) == "translation":
         return _translation_matches(question.accepted_answers, answer.text)
     answer_key = hangul.match_key(answer.text)
     return bool(answer_key) and answer_key in _hangul_keys(question.accepted_answers[0])
+
+
+def _check_script(question: VocabQuestion, text: str) -> None:
+    """Refuse typed `text` written in the wrong script for `question`'s side.
+
+    The Hangul side needs a Hangul syllable (Latin letters beside it stay allowed: T셔츠).
+    The translation side refuses any Hangul, a lone jamo included, unless one of the word's
+    own translations holds some, so that word stays answerable. A blank answer is never
+    refused: it is judged wrong. The messages name the script, never the word.
+    """
+    if not text.strip():
+        return
+    if _answer_side(question.direction) == "hangul":
+        if not hangul.contains_hangul(text):
+            raise MalformedAnswerError("Type your answer in Hangul.")
+    elif hangul.contains_any_hangul(text) and not any(
+        hangul.contains_any_hangul(translation) for translation in question.accepted_answers
+    ):
+        raise MalformedAnswerError("Type your answer in Latin letters.")
 
 
 def _answer_side(direction: Direction) -> _AnswerSide:

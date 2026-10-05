@@ -6,6 +6,7 @@ import ast
 import importlib.util
 import inspect
 import json
+import unicodedata
 import wave
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -363,6 +364,18 @@ def signature_shape(function: Callable[..., object]) -> tuple[list[str], list[st
         [name for name, kind in kinds.items() if kind is inspect.Parameter.POSITIONAL_OR_KEYWORD],
         [name for name, kind in kinds.items() if kind is inspect.Parameter.KEYWORD_ONLY],
     )
+
+
+def nfd(text: str, length: int) -> str:
+    """`text` decomposed, checked to hold exactly `length` code points.
+
+    The length is the proof it really is decomposed: a precomposed string left here by mistake
+    would be shorter, and the test using it would pass for the wrong reason. Shared by the
+    vocabulary judging tests (`test_exercises_vocab.py`, `test_exercises_vocab_script.py`).
+    """
+    result = unicodedata.normalize("NFD", text)
+    assert len(result) == length, f"{text!r} decomposes to {len(result)} code points, not {length}"
+    return result
 
 
 # ---------------------------------------------------------------------------------

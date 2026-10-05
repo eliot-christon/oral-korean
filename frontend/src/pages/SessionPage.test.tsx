@@ -507,6 +507,34 @@ test('another failure on answer is an alert, and the question can be answered ag
   expect(await screen.findByText('Not this time.')).toBeDefined()
 })
 
+test('a 422 refusing the script shows its detail and keeps the typed question answerable', async () => {
+  const detail = 'Type your answer in Hangul.'
+  const rightTyped = { ...RIGHT_PRACTICE, scored: true, statistics_after: KNOWN }
+  const fetchMock = stubFetch({
+    next: [ok(HANGUL_TYPING_QUESTION)],
+    answer: [{ status: 422, body: { detail } }, ok(rightTyped)],
+  })
+  await startedSession()
+  const field = (await screen.findByRole('textbox', { name: 'Your answer, in Korean' })) as HTMLInputElement
+  fireEvent.change(field, { target: { value: 'apple' } })
+  fireEvent.click(button('Submit'))
+
+  expect((await screen.findByRole('alert')).textContent).toBe(detail)
+  // Still the question, not a verdict: the field keeps what was typed and can be submitted again.
+  expect(screen.queryByText('Not this time.')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Next' })).toBeNull()
+  await waitFor(() => expect(field.disabled).toBe(false))
+  expect(field.value).toBe('apple')
+  expect(button('Submit').disabled).toBe(false)
+  fireEvent.change(field, { target: { value: '사과' } })
+  fireEvent.click(button('Submit'))
+
+  await screen.findByText('Right!')
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(bodiesSentTo(fetchMock, '/answer')).toEqual([{ answer: 'apple' }, { answer: '사과' }])
+  expect(requestsTo(fetchMock, '/api/vocab/sessions/s1/next')).toHaveLength(1)
+})
+
 test('the end shows the summary, a link to the word list and a way to start again', async () => {
   stubFetch({ next: [ok(END)] })
   await startedSession()

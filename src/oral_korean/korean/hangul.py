@@ -74,3 +74,22 @@ def contains_hangul(text: str) -> bool:
     return any(
         _FIRST_SYLLABLE <= char <= _LAST_SYLLABLE for char in unicodedata.normalize("NFC", text)
     )
+
+
+_HANGUL_RANGES: Final = (
+    ("ᄀ", "ᇿ"),  # conjoining jamo
+    ("㄰", "㆏"),  # compatibility jamo, what a keyboard's keys show
+    ("ꥠ", "꥿"),  # conjoining jamo, extended A
+    ("가", "힣"),  # precomposed syllables
+    ("ힰ", "퟿"),  # conjoining jamo, extended B
+    ("ﾠ", "￟"),  # halfwidth jamo
+)
+"""Every block a Hangul character, syllable or jamo, can come from."""
+
+
+def contains_any_hangul(text: str) -> bool:
+    """Whether `text` holds any Hangul character at all: a syllable or a jamo of any block.
+
+    Wider than `contains_hangul`: a lone ㅁ, typed with a Korean keyboard left on, counts.
+    """
+    return any(low <= char <= high for char in text for low, high in _HANGUL_RANGES)
