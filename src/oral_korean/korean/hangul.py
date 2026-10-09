@@ -66,6 +66,16 @@ def match_key(text: str) -> str:
     return unicodedata.normalize("NFC", "".join(kept).casefold())
 
 
+def jamo_sequence(text: str) -> str:
+    """The match key of `text` spelled letter by letter: every syllable as its conjoining jamo.
+
+    NFD of `match_key`, so 각 gives ᄀ ᅡ ᆨ and two words one consonant apart (의자, 의사) are
+    one character apart. Compatibility jamo and Latin letters stay as `match_key` leaves them.
+    For measuring how alike two words look, never for judging an answer.
+    """
+    return unicodedata.normalize("NFD", match_key(text))
+
+
 def contains_hangul(text: str) -> bool:
     """Whether `text` holds at least one Hangul syllable once composed.
 

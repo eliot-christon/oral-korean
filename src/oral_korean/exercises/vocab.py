@@ -16,6 +16,7 @@ learning step and a word answered by multiple choice never reaches typing at all
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import unicodedata
@@ -87,6 +88,9 @@ answer (see the simulation in the epic)."""
 _AnswerSide = Literal["translation", "hangul"]
 
 _MAX_DISTRACTORS: Final = 3
+_DISTRACTOR_POOL: Final = 6
+"""Distractors are drawn among this many of the closest candidates: close enough to make a
+right answer hard to spot by its shape, loose enough not to pair a word with the same three."""
 _TRANSLATION_JOIN: Final = ", "
 _SPACING_PUNCTUATION: Final = "-/_"
 _PARENTHESISED: Final = re.compile(r"\([^()]*\)")
@@ -375,7 +379,7 @@ def _build_choice_question(
     if not distractors:
         return None
 
-    chosen = source.sample(distractors, min(_MAX_DISTRACTORS, len(distractors)))
+    chosen = _draw_distractors(word, distractors, source)
     options = [correct_text, *(_option_text(candidate, side) for candidate in chosen)]
     source.shuffle(options)
     prompt, speech = _prompt_and_speech(word, direction)
@@ -409,6 +413,75 @@ def _eligible_distractors(
         seen_keys.add(key)
         eligible.append(candidate)
     return eligible
+
+
+def _draw_distractors(
+    target: VocabularyWord, candidates: Sequence[VocabularyWord], source: random.Random
+) -> list[VocabularyWord]:
+    """Up to `_MAX_DISTRACTORS` of `candidates`, drawn among the `_DISTRACTOR_POOL` most alike
+    `target`. Its own category comes first: as many of those as the draw can hold, the
+    others only to fill in, so a verb is never the only verb on offer when another exists."""
+    target_key = hangul.match_key(target.korean)
+    shuffled = list(candidates)
+    source.shuffle(shuffled)  # ties then fall in random order: `sorted` is stable
+
+    def rank(candidate: VocabularyWord) -> tuple[bool, float]:
+        candidate_key = hangul.match_key(candidate.korean)
+        return _same_category(target_key, candidate_key), _resemblance(
+            target, target_key, candidate, candidate_key
+        )
+
+    pool = sorted(shuffled, key=rank, reverse=True)[:_DISTRACTOR_POOL]
+    alike = [word for word in pool if _same_category(target_key, hangul.match_key(word.korean))]
+    unlike = [word for word in pool if word not in alike]
+    chosen = source.sample(alike, min(_MAX_DISTRACTORS, len(alike)))
+    return chosen + source.sample(unlike, min(_MAX_DISTRACTORS - len(chosen), len(unlike)))
+
+
+def _same_category(first_key: str, second_key: str) -> bool:
+    """Whether two match keys are both predicates or both not."""
+    return _is_predicate(first_key) == _is_predicate(second_key)
+
+
+def _is_predicate(key: str) -> bool:
+    """Whether a match key reads as a verb or an adjective: its dictionary form ends in 다.
+    A heuristic, not a part-of-speech tag: 바다 (sea) passes too."""
+    return key.endswith("다")
+
+
+def _resemblance(
+    target: VocabularyWord, target_key: str, candidate: VocabularyWord, candidate_key: str
+) -> float:
+    """How alike two words of one category look, the higher the closer: syllables shared at
+    the end (공부하다 and 운동하다 share 하다), syllable count, spelling jamo by jamo, a tag."""
+    shared_ending = len(os.path.commonprefix([target_key[::-1], candidate_key[::-1]]))
+    length_gap = abs(len(target_key) - len(candidate_key))
+    length_score = {0: 1.0, 1: 0.5}.get(length_gap, 0.0)
+    jamo_score = 2 * _similarity(
+        hangul.jamo_sequence(target.korean), hangul.jamo_sequence(candidate.korean)
+    )
+    tag_score = 1.0 if set(target.tags) & set(candidate.tags) else 0.0
+    return shared_ending + length_score + jamo_score + tag_score
+
+
+def _similarity(first: str, second: str) -> float:
+    """1 for equal strings down to 0, by Levenshtein distance over the longer length."""
+    longest = max(len(first), len(second))
+    if longest == 0:
+        return 1.0
+    previous = list(range(len(second) + 1))
+    for row, first_char in enumerate(first, start=1):
+        current = [row]
+        for column, second_char in enumerate(second, start=1):
+            current.append(
+                min(
+                    previous[column] + 1,
+                    current[column - 1] + 1,
+                    previous[column - 1] + (first_char != second_char),
+                )
+            )
+        previous = current
+    return 1 - previous[-1] / longest
 
 
 def _option_key(word: VocabularyWord, side: _AnswerSide) -> str:
