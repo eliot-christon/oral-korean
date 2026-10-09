@@ -54,7 +54,13 @@ from collections.abc import Callable
 import pytest
 from conftest import signature_shape
 
-from oral_korean.korean.hangul import contains_any_hangul, contains_hangul, display_form, match_key
+from oral_korean.korean.hangul import (
+    contains_any_hangul,
+    contains_hangul,
+    display_form,
+    jamo_sequence,
+    match_key,
+)
 
 
 def decomposed(text: str, length: int) -> str:
@@ -99,8 +105,8 @@ BLANK_TEXTS = [
 
 @pytest.mark.parametrize(
     "function",
-    [display_form, match_key, contains_hangul, contains_any_hangul],
-    ids=["display_form", "match_key", "contains_hangul", "contains_any_hangul"],
+    [display_form, match_key, contains_hangul, contains_any_hangul, jamo_sequence],
+    ids=["display_form", "match_key", "contains_hangul", "contains_any_hangul", "jamo_sequence"],
 )
 def test_each_operation_takes_one_positional_text(function: Callable[..., object]) -> None:
     """T03 and vocab-sessions call these three by position; the name is part of the contract."""
@@ -436,6 +442,72 @@ def test_jamo_alone_is_hangul_but_not_a_syllable(text: str) -> None:
     syllable, while `contains_any_hangul` sees the jamo a keyboard typed."""
     assert contains_any_hangul(text) is True
     assert contains_hangul(text) is False
+
+
+# ---------------------------------------------------------------------------------
+# Jamo sequence (vocab-harder-distractors)
+# ---------------------------------------------------------------------------------
+#
+# `jamo_sequence(text: str) -> str`: the match key of `text` decomposed into conjoining jamo
+# (NFD), what the multiple-choice distractors are compared by (one jamo off: 의자 / 의사).
+# Every expected value is built by `decomposed()` from a precomposed literal and checked for its
+# length, or written as code points: conjoining jamo and their compatibility look-alikes cannot
+# be told apart on screen.
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        pytest.param("의자", decomposed("의자", 4), id="two-open-syllables"),
+        pytest.param("각", decomposed("각", 3), id="final-consonant"),
+        pytest.param("공부 하다!", decomposed("공부하다", 9), id="space-and-punctuation-dropped"),
+        pytest.param("T셔츠", "t" + decomposed("셔츠", 4), id="latin-casefolded"),
+        pytest.param("2층", "2" + decomposed("층", 3), id="digit-kept"),
+        pytest.param(chr(0xAC00), chr(0x1100) + chr(0x1161), id="first-syllable-u-ac00"),
+        pytest.param(
+            chr(0xD7A3), chr(0x1112) + chr(0x1175) + chr(0x11C2), id="last-syllable-u-d7a3"
+        ),
+        pytest.param(chr(0x3131), chr(0x3131), id="compatibility-jamo-kept"),
+        pytest.param(
+            chr(0x3145) + chr(0x314F),
+            chr(0x3145) + chr(0x314F),
+            id="compatibility-jamo-never-composed",
+        ),
+        pytest.param(
+            "가" + chr(0x3131), chr(0x1100) + chr(0x1161) + chr(0x3131), id="syllable-and-jamo"
+        ),
+        pytest.param("", "", id="empty"),
+        pytest.param(" ?! ", "", id="spaces-and-punctuation-only"),
+    ],
+)
+def test_jamo_sequence(text: str, expected: str) -> None:
+    """Every precomposed syllable comes apart, with or without its final consonant; what the
+    match key drops is dropped, and what it keeps (Latin casefolded, digits, compatibility
+    jamo) passes through as it is."""
+    assert jamo_sequence(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(decomposed("의자", 4), id="decomposed"),
+        pytest.param("의" + decomposed("자", 2), id="half-decomposed"),
+        pytest.param(" 의 자. ", id="spaced-and-punctuated"),
+    ],
+)
+def test_every_spelling_of_a_word_has_its_jamo_sequence(text: str) -> None:
+    """NFD or NFC input, spaced or not: one word, one sequence, as with the match key."""
+    assert jamo_sequence(text) == jamo_sequence("의자")
+
+
+@pytest.mark.parametrize("text", MESSY_TEXTS)
+def test_a_jamo_sequence_holds_no_precomposed_syllable(text: str) -> None:
+    """Fully decomposed, whatever came in, and composing it again gives back the match key:
+    nothing is lost or added on the way."""
+    sequence = jamo_sequence(text)
+
+    assert all(not chr(0xAC00) <= char <= chr(0xD7A3) for char in sequence)
+    assert unicodedata.normalize("NFC", sequence) == match_key(text)
 
 
 # ---------------------------------------------------------------------------------
