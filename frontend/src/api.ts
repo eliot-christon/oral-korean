@@ -1,7 +1,8 @@
 /**
  * Typed wrappers around the backend's HTTP API: the numbers exercise
  * (`src/oral_korean/api/routes/numbers.py`), the clock exercise
- * (`src/oral_korean/api/routes/time_of_day.py`), the vocabulary
+ * (`src/oral_korean/api/routes/time_of_day.py`), the calendar exercise
+ * (`src/oral_korean/api/routes/dates.py`), the vocabulary
  * (`src/oral_korean/api/routes/vocab_words.py`) and its learn and review sessions
  * (`src/oral_korean/api/routes/vocab_sessions.py`).
  *
@@ -182,6 +183,56 @@ export async function submitTimeAnswer(
     body: JSON.stringify({ period: selection.period, hour: selection.hour, minute: selection.minute }),
   })
   return parseJsonOrThrow<TimeAnswerResponse>(response, 'Could not submit the answer.')
+}
+
+// The calendar exercise (`src/oral_korean/api/routes/dates.py`): a date is heard, and picked
+// on a calendar. The create response says only whether the year is asked; the answer's
+// carries the date and its text.
+
+export interface YearRange {
+  minimum: number
+  maximum: number
+}
+
+export interface DateQuestionResponse {
+  question_id: string
+  audio_url: string
+  asks_year: boolean
+}
+
+/** A picked day, month 1 to 12, `year` null when the question does not ask for it. */
+export interface DateSelection {
+  year: number | null
+  month: number
+  day: number
+}
+
+export interface DateAnswerResponse {
+  verdict: 'correct' | 'incorrect'
+  expected: DateSelection
+  text: string
+}
+
+export async function fetchDateYearRange(): Promise<YearRange> {
+  const response = await fetch('/api/exercises/dates/year-range')
+  return parseJsonOrThrow<YearRange>(response, 'Could not load the years.')
+}
+
+export async function createDateQuestion(): Promise<DateQuestionResponse> {
+  const response = await fetch('/api/exercises/dates/questions', { method: 'POST' })
+  return parseJsonOrThrow<DateQuestionResponse>(response, 'Could not draw a new question.')
+}
+
+export async function submitDateAnswer(
+  questionId: string,
+  selection: DateSelection,
+): Promise<DateAnswerResponse> {
+  const response = await fetch(`/api/exercises/dates/questions/${questionId}/answer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ year: selection.year, month: selection.month, day: selection.day }),
+  })
+  return parseJsonOrThrow<DateAnswerResponse>(response, 'Could not submit the answer.')
 }
 
 // The vocabulary. Every figure below is computed by the backend (`srs/` through the routes):

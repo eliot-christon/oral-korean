@@ -55,6 +55,14 @@ function stubFetch(): void {
           }),
         )
       }
+      if (url.endsWith('/api/exercises/dates/year-range')) {
+        return Promise.resolve(jsonResponse({ minimum: 1950, maximum: 2049 }))
+      }
+      if (url.endsWith('/api/exercises/dates/questions')) {
+        return Promise.resolve(
+          jsonResponse({ question_id: 'd1', audio_url: '/api/exercises/dates/questions/d1/audio', asks_year: true }),
+        )
+      }
       if (url.endsWith('/api/vocab/tags')) {
         return Promise.resolve(jsonResponse({ tags: [] }))
       }
@@ -183,13 +191,13 @@ function navigateTo(hash: string): void {
   })
 }
 
-test('the navigation lists the numbers and clock exercises, the word list, learn and review, in that order', () => {
+test('the navigation lists the numbers, clock and calendar exercises, the word list, learn and review, in that order', () => {
   startAt('')
   render(<App />)
 
   const links = within(screen.getByRole('navigation')).getAllByRole('link')
-  expect(links.map((link) => link.textContent)).toEqual(['Numbers', 'Time', 'Words', 'Learn', 'Review'])
-  expect(links.map((link) => link.getAttribute('href'))).toEqual(['#/numbers', '#/time', '#/words', '#/learn', '#/review'])
+  expect(links.map((link) => link.textContent)).toEqual(['Numbers', 'Time', 'Dates', 'Words', 'Learn', 'Review'])
+  expect(links.map((link) => link.getAttribute('href'))).toEqual(['#/numbers', '#/time', '#/dates', '#/words', '#/learn', '#/review'])
 })
 
 test.each(['#/words', '#/words/12'])('marks Words as the current page at %j', async (hash) => {
@@ -232,6 +240,16 @@ test('#/time renders the clock exercise, under the Time entry', async () => {
 
   expect(await screen.findByRole('heading', { name: 'Time' })).toBeDefined()
   expect(screen.getByRole('link', { name: 'Time' }).getAttribute('aria-current')).toBe('page')
+  // Let the page's first question settle inside the test.
+  await waitFor(() => expect(document.querySelector('audio')).not.toBeNull())
+})
+
+test('#/dates renders the calendar exercise, under the Dates entry', async () => {
+  startAt('#/dates')
+  render(<App />)
+
+  expect(await screen.findByRole('heading', { name: 'Dates' })).toBeDefined()
+  expect(screen.getByRole('link', { name: 'Dates' }).getAttribute('aria-current')).toBe('page')
   // Let the page's first question settle inside the test.
   await waitFor(() => expect(document.querySelector('audio')).not.toBeNull())
 })

@@ -93,6 +93,16 @@ export function ClockIcon({ className = 'size-6' }: { className?: string }) {
   )
 }
 
+/** A calendar page: the calendar exercise, in the navigation. */
+export function CalendarIcon({ className = 'size-6' }: { className?: string }) {
+  return (
+    <Svg className={className}>
+      <rect x={3.5} y={5} width={17} height={15.5} rx={2.5} />
+      <path d="M3.5 10h17M8 3v4M16 3v4" />
+    </Svg>
+  )
+}
+
 /** An open book: the vocabulary, in the navigation. */
 export function BookIcon({ className = 'size-6' }: { className?: string }) {
   return (

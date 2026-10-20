@@ -12,6 +12,7 @@ import { useMemo, useSyncExternalStore } from 'react'
 export type Route =
   | { page: 'numbers' }
   | { page: 'time' }
+  | { page: 'dates' }
   | { page: 'words' }
   | { page: 'addWords' }
   | { page: 'word'; id: number }
@@ -60,6 +61,7 @@ export function parseRoute(hash: string): Route {
       switch (first) {
         case 'numbers':
         case 'time':
+        case 'dates':
         case 'words':
         case 'learn':
         case 'review':
@@ -88,6 +90,8 @@ export function routeHref(route: LinkableRoute): string {
       return '#/numbers'
     case 'time':
       return '#/time'
+    case 'dates':
+      return '#/dates'
     case 'words':
       return '#/words'
     case 'addWords':
