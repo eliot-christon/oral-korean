@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from oral_korean.api.audio import synthesise_or_502
 from oral_korean.api.pending import get_pending_or_404, store_pending, take_pending_or_404
+from oral_korean.api.routes.vocab_words import WORD_AUDIO_ROUTE_NAME
 from oral_korean.exercises.vocab import (
     ChoiceAnswer,
     Direction,
@@ -234,7 +235,11 @@ class AnswerRequest(BaseModel):
 
 class AnswerResponse(BaseModel):
     """The verdict, the word, and the asked direction's statistics before and after (null if
-    the word was deleted)."""
+    the word was deleted).
+
+    `audio_url` speaks the word now that it is revealed: the word route, for a written
+    direction of a word still stored; null for a voice direction, whose question already
+    played it, and for a deleted word."""
 
     correct: bool
     korean: str
@@ -243,6 +248,7 @@ class AnswerResponse(BaseModel):
     scored: bool
     statistics_before: WordStatistics | None
     statistics_after: WordStatistics | None
+    audio_url: str | None
 
 
 @dataclass
@@ -461,7 +467,21 @@ def submit_answer(item_id: str, body: AnswerRequest, request: Request) -> Answer
         scored=scored,
         statistics_before=before,
         statistics_after=after,
+        audio_url=_word_audio_url(request, pending, pending.question, before),
     )
+
+
+def _word_audio_url(
+    request: Request,
+    pending: PendingVocabItem,
+    question: VocabQuestion,
+    before: WordStatistics | None,
+) -> str | None:
+    """The answered word's audio route, unless its question spoke it or it was deleted
+    (`before` is null only then)."""
+    if question.speech is not None or before is None:
+        return None
+    return str(request.app.url_path_for(WORD_AUDIO_ROUTE_NAME, word_id=pending.item.word.id))
 
 
 def _chosen_words(
