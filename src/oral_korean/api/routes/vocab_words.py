@@ -22,8 +22,10 @@ from enum import StrEnum
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from oral_korean.api.audio import synthesise_or_502
 from oral_korean.exercises.vocab import AnswerMode, Direction
 from oral_korean.exercises.vocab_words import (
     EntryProblem,
@@ -44,8 +46,12 @@ from oral_korean.srs.memory import (
     statistics,
 )
 from oral_korean.storage.words import DuplicateWordError, HistoryRow, WordStore
+from oral_korean.tts.cache import AudioCache
 
 router = APIRouter(prefix="/vocab")
+
+WORD_AUDIO_ROUTE_NAME = "vocab_word_audio"
+"""The word audio route's name, which a session's answer links to once the word is revealed."""
 
 
 class AddWordRequest(BaseModel):
@@ -364,6 +370,16 @@ def get_word(word_id: int, request: Request) -> WordDetailResponse:
         **_word_response(word, _now(request)).model_dump(),
         history=[_history_entry(row) for row in store.history(word_id)],
     )
+
+
+@router.get("/words/{word_id}/audio", name=WORD_AUDIO_ROUTE_NAME)
+def get_word_audio(word_id: int, request: Request) -> FileResponse:
+    """The WAV of a word's Korean, synthesised on first request and cached."""
+    word = _word_store(request).get_word(word_id)
+    if word is None:
+        raise _not_found(word_id)
+    cache: AudioCache = request.app.state.audio_cache
+    return FileResponse(synthesise_or_502(cache, word.korean), media_type="audio/wav")
 
 
 @router.post("/words", response_model=WordResponse, status_code=201)

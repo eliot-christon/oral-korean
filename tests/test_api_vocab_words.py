@@ -39,13 +39,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import HARNESS_START, NumbersHarness, build_numbers_harness
+from conftest import HARNESS_START, FakeSpeechEngine, NumbersHarness, build_numbers_harness
 from fastapi.testclient import TestClient
 from httpx import Response
 
 from oral_korean.api.app import create_app
 from oral_korean.config import AppConfig
 from oral_korean.srs.memory import Familiarity, MemoryState, ReviewRecord, score, seed
+from oral_korean.tts.base import SpeechSynthesisError
 
 VOCAB = "/api/vocab"
 WORDS = f"{VOCAB}/words"
@@ -591,6 +592,51 @@ def test_an_unknown_word_is_a_json_404(client: TestClient) -> None:
 
     assert response.status_code == 404
     assert "detail" in response.json()
+
+
+# ---------------------------------------------------------------------------------
+# A word's audio
+# ---------------------------------------------------------------------------------
+
+
+def test_a_words_audio_speaks_its_korean_once_however_often_it_is_played(
+    harness: NumbersHarness,
+) -> None:
+    word = added(harness.client, "사과", "apple")
+
+    first = harness.client.get(f"{word_path(word['id'])}/audio")
+    second = harness.client.get(f"{word_path(word['id'])}/audio")
+
+    assert first.status_code == 200
+    assert first.headers["content-type"] == "audio/wav"
+    assert first.content.startswith(b"RIFF")
+    assert second.content == first.content
+    assert [call.text for call in harness.engine.calls] == ["사과"]
+
+
+def test_adding_a_word_synthesises_nothing(harness: NumbersHarness) -> None:
+    """The audio is synthesised when first played, never ahead."""
+    added(harness.client, "사과", "apple")
+
+    assert not harness.engine.calls
+
+
+def test_an_unknown_words_audio_is_a_404(client: TestClient) -> None:
+    response = client.get(f"{word_path(999)}/audio")
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "No word with id 999."}
+
+
+def test_a_failed_synthesis_is_the_text_free_502(tmp_path: Path) -> None:
+    engine = FakeSpeechEngine(error=SpeechSynthesisError("could not speak 사과"))
+    harness = build_numbers_harness(tmp_path, engine=engine)
+    word = added(harness.client, "사과", "apple")
+
+    response = harness.client.get(f"{word_path(word['id'])}/audio")
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Could not synthesise audio for this question."}
 
 
 # ---------------------------------------------------------------------------------
