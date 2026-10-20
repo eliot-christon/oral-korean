@@ -1,5 +1,7 @@
 import { useState, type ReactNode } from 'react'
 
+import { wordAudioUrl } from '../api'
+import { AudioButton } from '../components/AudioButton'
 import { Badge } from '../components/Badge'
 import { Button } from '../components/Button'
 import { CalendarPicker, type CalendarValue } from '../components/CalendarPicker'
@@ -161,6 +163,20 @@ export function Preview() {
               <ArrowDownIcon className="size-5 rotate-180" />
               Lowest first
             </Button>
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Audio">
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted">
+            A word's play button, large in a session and small beside a word. It plays the first
+            word of the vocabulary when the backend runs, and says the audio is unavailable when
+            it does not.
+          </p>
+          <div className="flex flex-wrap items-center gap-6">
+            <AudioButton url={wordAudioUrl(1)} label="Play the word" />
+            <AudioButton url={wordAudioUrl(1)} label="Play the word, small" size="small" />
           </div>
         </div>
       </Section>

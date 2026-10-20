@@ -95,6 +95,7 @@ const WRONG_SCORED = {
   scored: true,
   statistics_before: KNOWN,
   statistics_after: LAPSED,
+  audio_url: null,
 }
 
 const RIGHT_PRACTICE = {
@@ -105,6 +106,7 @@ const RIGHT_PRACTICE = {
   scored: false,
   statistics_before: LAPSED,
   statistics_after: LAPSED,
+  audio_url: null,
 }
 
 const END = {
@@ -352,6 +354,37 @@ test('a voice question shows no Korean before the answer, only a play button', a
 
   await screen.findByText('Not this time.')
   expect(container.innerHTML).toContain('사과')
+})
+
+test('a written question speaks the word once answered, with a replay button', async () => {
+  const verdict = { ...WRONG_SCORED, audio_url: '/api/vocab/words/7/audio' }
+  stubFetch({ next: [ok(CHOICE_QUESTION)], answer: [ok(verdict)] })
+  const { container } = render(<SessionPage kind="review" />)
+  await screen.findByText('1 word due')
+  fireEvent.click(button('Start'))
+  await screen.findByText('What does it mean?')
+  expect(screen.queryByRole('button', { name: 'Play the word' })).toBeNull()
+  const playsBefore = playSpy.mock.calls.length
+
+  fireEvent.click(await screen.findByRole('button', { name: 'pear' }))
+
+  await screen.findByText('Not this time.')
+  expect(playSpy.mock.calls.length).toBe(playsBefore + 1)
+  expect(container.querySelector('audio')?.getAttribute('src')).toBe('/api/vocab/words/7/audio')
+  fireEvent.click(button('Play the word'))
+  expect(playSpy.mock.calls.length).toBe(playsBefore + 2)
+})
+
+test('a voice question adds no second player once answered', async () => {
+  stubFetch({ next: [ok(VOICE_TYPING_QUESTION)], answer: [ok(WRONG_SCORED)] })
+  await startedSession()
+  await screen.findByText('Listen: what does it mean?')
+
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'pear' } })
+  fireEvent.click(button('Submit'))
+
+  await screen.findByText('Not this time.')
+  expect(screen.getAllByRole('button', { name: 'Play the word' })).toHaveLength(1)
 })
 
 test('a Hangul answer field is Korean, and sends the text exactly as typed', async () => {
