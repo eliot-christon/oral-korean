@@ -12,7 +12,9 @@ import {
   type Word,
   type WordDetail,
   type WordStatistics,
+  wordAudioUrl,
 } from '../api'
+import { AudioButton } from '../components/AudioButton'
 import { Badge } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
@@ -449,9 +451,12 @@ export function WordDetailPage({ id }: { id: number }) {
       ) : (
         <>
           <header className="flex flex-col gap-2">
-            <h1 lang="ko" className="text-5xl wrap-break-word text-primary">
-              {word.korean}
-            </h1>
+            <div className="flex items-center justify-between gap-3">
+              <h1 lang="ko" className="min-w-0 text-5xl wrap-break-word text-primary">
+                {word.korean}
+              </h1>
+              <AudioButton url={wordAudioUrl(word.id)} label="Play the word" size="small" />
+            </div>
             <p className="text-lg">{word.translations.join(', ')}</p>
             {word.tags.length > 0 && (
               <p className="flex flex-wrap gap-2">

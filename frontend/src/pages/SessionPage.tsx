@@ -20,11 +20,12 @@ import {
   type TagCount,
   type WordStatistics,
 } from '../api'
-import { Button } from '../components/Button'
 import { Card } from '../components/Card'
 import { Feedback } from '../components/Feedback'
 import { Field } from '../components/Field'
-import { CheckIcon, CrossIcon, ReplayIcon } from '../components/icons'
+import { AudioButton } from '../components/AudioButton'
+import { Button } from '../components/Button'
+import { CheckIcon, CrossIcon } from '../components/icons'
 import { TextLink } from '../components/TextLink'
 import { directionLabel, formatDays, formatDue, formatScore } from '../format'
 import { isSubmitEnter, KOREAN_INPUT } from '../koreanInput'
@@ -378,27 +379,6 @@ function ProgressLine({ item }: { item: Presentation | Question }) {
   )
 }
 
-/** A large play button for an item's audio: autoplay is only attempted, phones block it. */
-function AudioButton({ url, label }: { url: string; label: string }) {
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const [failed, setFailed] = useState(false)
-
-  useEffect(() => {
-    audioRef.current?.play().catch(() => {})
-  }, [url])
-
-  return (
-    <div className="flex flex-col items-center gap-2">
-      {/* No native controls: the button is the play control. */}
-      <audio ref={audioRef} src={url} onError={() => setFailed(true)} />
-      <Button round aria-label={label} onClick={() => void audioRef.current?.play().catch(() => {})}>
-        <ReplayIcon />
-      </Button>
-      {failed && <p className="text-sm font-bold text-muted">Audio unavailable.</p>}
-    </div>
-  )
-}
-
 function PresentationView({
   presentation,
   busy,
@@ -415,7 +395,7 @@ function PresentationView({
         {presentation.korean}
       </p>
       <p className="text-lg">{presentation.translations.join(', ')}</p>
-      <AudioButton url={presentation.audio_url} label="Play the word" />
+      <AudioButton url={presentation.audio_url} label="Play the word" autoPlay />
       <Button className="self-end" disabled={busy} onClick={onContinue}>
         Continue
       </Button>
@@ -448,7 +428,7 @@ function QuestionView({
           {question.prompt}
         </p>
       )}
-      {question.audio_url !== null && <AudioButton url={question.audio_url} label="Play the word" />}
+      {question.audio_url !== null && <AudioButton url={question.audio_url} label="Play the word" autoPlay />}
       {question.options !== null ? (
         <ul className="flex flex-col gap-3">
           {question.options.map((option, index) => {
@@ -540,6 +520,7 @@ function VerdictView({ question, verdict }: { question: Question; verdict: Sessi
         </p>
         {wrongChoice && <p>The right answer: {verdict.correct_option}</p>}
       </Feedback>
+      {verdict.audio_url !== null && <AudioButton url={verdict.audio_url} label="Play the word" autoPlay />}
       <ScoreChange question={question} verdict={verdict} />
     </div>
   )

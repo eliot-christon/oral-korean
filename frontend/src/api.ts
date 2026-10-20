@@ -391,6 +391,11 @@ export async function fetchWord(id: number): Promise<WordDetail> {
   return parseJsonOrThrow<WordDetail>(response, 'Could not load this word.')
 }
 
+/** Where a word's audio is served: synthesised on the first play, then cached. */
+export function wordAudioUrl(id: number): string {
+  return `/api/vocab/words/${id}/audio`
+}
+
 export async function fetchTags(): Promise<TagsResponse> {
   const response = await fetch('/api/vocab/tags')
   return parseJsonOrThrow<TagsResponse>(response, 'Could not load the tags.')
@@ -659,6 +664,8 @@ export interface SessionVerdict {
   scored: boolean
   statistics_before: WordStatistics | null
   statistics_after: WordStatistics | null
+  /** The word's audio for a written direction, null for a voice one or a deleted word. */
+  audio_url: string | null
 }
 
 /** Starts a session; nothing to learn or review is a `409` `ApiError` saying so. */

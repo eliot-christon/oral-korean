@@ -5,11 +5,12 @@ Written before the implementation; the session routes and the helpers are docume
 
 - `POST /api/vocab/items/{item_id}/answer`, a body with exactly one of `{"answer": str}`,
   `{"choice": int}` or `{"dont_know": true}` -> `200 {"correct", "korean", "translations",
-  "correct_option", "scored", "statistics_before", "statistics_after"}`. The statistics are
-  the word routes' own JSON shape, read at the clock's instant; both null when the word was
-  deleted while its question was pending. `correct_option` is the right option's text for
-  multiple choice, null for typing. `scored` is false for a practice question and for a
-  deleted word.
+  "correct_option", "scored", "statistics_before", "statistics_after", "audio_url"}`. The
+  statistics are the word routes' own JSON shape, read at the clock's instant; both null when
+  the word was deleted while its question was pending. `correct_option` is the right
+  option's text for multiple choice, null for typing. `scored` is false for a practice
+  question and for a deleted word. `audio_url` is the word's own audio route for a written
+  direction (issue #16), null for a voice one and for a deleted word.
 - The answer **consumes** the question: a second answer is `404`, and of two submitted at
   once exactly one is `200`. A body that does not fit the question (text for multiple
   choice, a choice for typing, an index out of range, zero or several of the three fields)
@@ -91,6 +92,7 @@ VERDICT_KEYS: Final = {
     "scored",
     "statistics_before",
     "statistics_after",
+    "audio_url",
 }
 ANSWER_CONTEXT_KEYS: Final = {"direction", "mode", "correct"}
 HANGUL_ONLY: Final = "Type your answer in Hangul."
@@ -434,6 +436,58 @@ def test_an_unknown_item_is_a_404_on_both_item_routes(harness: NumbersHarness) -
     assert answer_response.status_code == 404
     assert "no-such-item" in answer_response.json()["detail"]
     assert audio_response.status_code == 404
+
+
+# ---------------------------------------------------------------------------------
+# The word's audio, once revealed
+# ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("direction", [H2T, T2H])
+@pytest.mark.parametrize("body", ["right", "wrong", "dont_know"])
+def test_a_written_answer_links_the_words_audio(
+    harness: NumbersHarness, direction: str, body: str
+) -> None:
+    asked = ask_by_choice(harness, direction)
+    bodies = {
+        "right": right_choice(asked.question),
+        "wrong": wrong_choice(asked.question),
+        "dont_know": DONT_KNOW,
+    }
+
+    verdict = answered(harness.client, asked.item_id, bodies[body])
+
+    assert verdict["audio_url"] == f"{WORDS}/{asked.word_id}/audio"
+    audio = harness.client.get(verdict["audio_url"])
+    assert audio.status_code == 200
+    assert audio.headers["content-type"] == "audio/wav"
+
+
+@pytest.mark.parametrize("direction", [V2H, V2T])
+def test_a_voice_answer_links_no_audio_its_question_spoke_the_word(
+    harness: NumbersHarness, direction: str
+) -> None:
+    asked = ask_by_choice(harness, direction)
+
+    verdict = answered(harness.client, asked.item_id, right_choice(asked.question))
+
+    assert verdict["audio_url"] is None
+
+
+def test_a_question_never_carries_the_word_route(harness: NumbersHarness) -> None:
+    """The word's id would name the word before it is answered: only the verdict links it."""
+    asked = ask_by_choice(harness, H2T)
+
+    assert f"{WORDS}/" not in str(asked.question)
+
+
+def test_a_deleted_words_answer_links_no_audio(harness: NumbersHarness) -> None:
+    asked = ask_by_choice(harness, H2T)
+    assert harness.client.delete(f"{WORDS}/{asked.word_id}").status_code == 204
+
+    verdict = answered(harness.client, asked.item_id, right_choice(asked.question))
+
+    assert verdict["audio_url"] is None
 
 
 # ---------------------------------------------------------------------------------

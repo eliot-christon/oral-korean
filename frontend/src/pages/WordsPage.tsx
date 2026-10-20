@@ -11,7 +11,9 @@ import {
   type WordListQuery,
   type WordListResponse,
   type WordSort,
+  wordAudioUrl,
 } from '../api'
+import { AudioButton } from '../components/AudioButton'
 import { Badge, type BadgeTone } from '../components/Badge'
 import { Button } from '../components/Button'
 import { Card } from '../components/Card'
@@ -476,8 +478,12 @@ export function WordsPage() {
           ) : (
             <ul aria-label="Words" className="flex flex-col gap-3">
               {list.words.map((word) => (
-                <li key={word.id}>
-                  <WordCard word={word} now={now} />
+                <li key={word.id} className="flex items-center gap-1">
+                  {/* Beside the link, not inside it: a button inside an <a> is invalid. */}
+                  <div className="min-w-0 flex-1">
+                    <WordCard word={word} now={now} />
+                  </div>
+                  <AudioButton url={wordAudioUrl(word.id)} label={`Play ${word.korean}`} size="small" />
                 </li>
               ))}
             </ul>

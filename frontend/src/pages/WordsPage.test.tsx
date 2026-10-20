@@ -151,6 +151,23 @@ test('one card per word: New for a word never reviewed, due now, and in 3 days',
   expect(cardFor('물', all).textContent).toContain('64%')
 })
 
+test('each row plays its word beside the link, without opening the word', async () => {
+  const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve())
+  stubFetch()
+  render(<WordsPage />)
+  const row = cardFor('사과', await cards())
+
+  const play = within(row).getByRole('button', { name: 'Play 사과' })
+  fireEvent.click(play)
+
+  expect(playSpy).toHaveBeenCalledTimes(1)
+  expect(play.closest('a')).toBeNull()
+  expect(row.querySelector('audio')?.getAttribute('src')).toBe('/api/vocab/words/1/audio')
+  expect(row.querySelector('audio')?.getAttribute('preload')).toBe('none')
+  expect(window.location.hash).not.toBe('#/words/1')
+  playSpy.mockRestore()
+})
+
 test('a new word shows no due text at all', async () => {
   stubFetch()
 

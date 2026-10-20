@@ -146,6 +146,20 @@ test('shows the word, its translations and its tags, the Korean marked as Korean
   expect(screen.getByText('food')).toBeDefined()
 })
 
+test('a play button speaks the word, fetched only when played', async () => {
+  const playSpy = vi.spyOn(HTMLMediaElement.prototype, 'play').mockImplementation(() => Promise.resolve())
+  stubFetch(200, REVIEWED_WORD)
+  const { container } = render(<WordDetailPage id={7} />)
+  await screen.findByRole('heading', { name: '사과' })
+  expect(playSpy).not.toHaveBeenCalled()
+
+  fireEvent.click(screen.getByRole('button', { name: 'Play the word' }))
+
+  expect(playSpy).toHaveBeenCalledTimes(1)
+  expect(container.querySelector('audio')?.getAttribute('src')).toBe('/api/vocab/words/7/audio')
+  playSpy.mockRestore()
+})
+
 test('the history lists the seed and both answers, oldest first, the seed labelled with its level', async () => {
   stubFetch(200, REVIEWED_WORD)
 
